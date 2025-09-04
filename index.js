@@ -34,7 +34,22 @@ const client = new line.Client(config);
 // Create an Express application
 const app = express();
 
-// --- 2. CREATE THE WEBHOOK ---
+// --- 2. ADD ROOT ENDPOINT ---
+// Simple endpoint to show the bot is running
+app.get('/', (req, res) => {
+  res.json({
+    message: 'LINE Summary Bot is running!',
+    status: 'active',
+    webhook: '/webhook',
+    features: [
+      'Message echo',
+      'AI-powered conversation summarization with /summarize command',
+      'Firebase data storage'
+    ]
+  });
+});
+
+// --- 3. CREATE THE WEBHOOK ---
 // This is the endpoint that LINE will send message data to
 app.post('/webhook', line.middleware(config), (req, res) => {
   Promise
