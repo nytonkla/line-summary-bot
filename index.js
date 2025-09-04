@@ -74,6 +74,23 @@ async function handleEvent(event) {
     const chatsId = event.source.groupId || event.source.userId;
     const chatsType = event.source.groupId ? 'group' : 'user';
     
+    // Get user profile (display name)
+    let displayName = 'Unknown User';
+    try {
+      if (chatsType === 'group') {
+        // Get group member profile
+        const profile = await client.getGroupMemberProfile(event.source.groupId, event.source.userId);
+        displayName = profile.displayName;
+      } else {
+        // Get user profile
+        const profile = await client.getProfile(event.source.userId);
+        displayName = profile.displayName;
+      }
+    } catch (profileError) {
+      console.error('Error getting user profile:', profileError);
+      // Keep default displayName if profile fetch fails
+    }
+    
     // Write message data to Firestore
     const messageData = {
       messageId: event.message.id,
@@ -82,6 +99,7 @@ async function handleEvent(event) {
       eventType: event.type,
       messageType: event.message.type,
       userId: event.source.userId,
+      displayName: displayName,
       chatsId: chatsId,
       chatsType: chatsType
     };
@@ -92,7 +110,7 @@ async function handleEvent(event) {
       .collection('messages')
       .add(messageData);
     
-    console.log(`Message saved to Firestore for ${chatsType} ${chatsId}:`, messageData);
+    console.log(`Message saved to Firestore for ${chatsType} ${chatsId} from ${displayName}:`, messageData);
 
 
 
@@ -123,9 +141,9 @@ async function handleEvent(event) {
           return client.replyMessage(event.replyToken, reply);
         }
 
-        // Create conversation text for summarization
+        // Create conversation text for summarization with display names
         const conversationText = messages
-          .map(msg => `User: ${msg.text}`)
+          .map(msg => `${msg.displayName || 'User'}: ${msg.text}`)
           .join('\n');
 
         // Generate summary using Gemini AI
