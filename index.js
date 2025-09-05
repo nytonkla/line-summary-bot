@@ -74,13 +74,23 @@ async function handleEvent(event) {
     const chatsId = event.source.groupId || event.source.userId;
     const chatsType = event.source.groupId ? 'group' : 'user';
     
-    // Get user profile (display name)
+    // Get user profile (display name) and group name
     let displayName = 'Unknown User';
+    let groupName = null;
     try {
       if (chatsType === 'group') {
         // Get group member profile
         const profile = await client.getGroupMemberProfile(event.source.groupId, event.source.userId);
         displayName = profile.displayName;
+        
+        // Get group summary (group name)
+        try {
+          const groupSummary = await client.getGroupSummary(event.source.groupId);
+          groupName = groupSummary.groupName;
+        } catch (groupError) {
+          console.error('Error getting group name:', groupError);
+          groupName = 'Unknown Group';
+        }
       } else {
         // Get user profile
         const profile = await client.getProfile(event.source.userId);
@@ -100,6 +110,7 @@ async function handleEvent(event) {
       messageType: event.message.type,
       userId: event.source.userId,
       displayName: displayName,
+      groupName: groupName,
       chatsId: chatsId,
       chatsType: chatsType
     };
@@ -117,44 +128,68 @@ async function handleEvent(event) {
     // Check if the message is a command
     if (event.message.text.toLowerCase() === '/summarize') {
       try {
-        // Fetch last 20 messages from Firestore
-        const messagesSnapshot = await db.collection('chats')
-          .doc(chatsId)
-          .collection('messages')
-          .orderBy('timestamp', 'desc')
-          .limit(20)
-          .get();
-
-        if (messagesSnapshot.empty) {
+        // Get all chats (groups and users) that the user has participated in
+        const allChatsSnapshot = await db.collection('chats').get();
+        
+        if (allChatsSnapshot.empty) {
           const reply = { type: 'text', text: 'No messages found to summarize.' };
           return client.replyMessage(event.replyToken, reply);
         }
 
-        // Convert to array and reverse to get chronological order
-        const messages = messagesSnapshot.docs
-          .map(doc => doc.data())
-          .reverse()
-          .filter(msg => msg.text && msg.text !== '/summarize'); // Exclude the command itself
+        const summaries = [];
+        
+        // Process each chat
+        for (const chatDoc of allChatsSnapshot.docs) {
+          const chatId = chatDoc.id;
+          
+          // Get last 20 messages from this chat
+          const messagesSnapshot = await db.collection('chats')
+            .doc(chatId)
+            .collection('messages')
+            .orderBy('timestamp', 'desc')
+            .limit(20)
+            .get();
 
-        if (messages.length === 0) {
+          if (messagesSnapshot.empty) continue;
+
+          // Convert to array and reverse to get chronological order
+          const messages = messagesSnapshot.docs
+            .map(doc => doc.data())
+            .reverse()
+            .filter(msg => msg.text && msg.text !== '/summarize'); // Exclude the command itself
+
+          if (messages.length === 0) continue;
+
+          // Get chat info (group name or user info)
+          const firstMessage = messages[0];
+          const chatName = firstMessage.chatsType === 'group' 
+            ? (firstMessage.groupName || 'Unknown Group')
+            : (firstMessage.displayName || 'Direct Chat');
+
+          // Create conversation text for this chat
+          const conversationText = messages
+            .map(msg => `${msg.displayName || 'User'}: ${msg.text}`)
+            .join('\n');
+
+          // Generate summary for this chat
+          const summaryPrompt = `Please provide a concise summary of the following conversation from "${chatName}":\n\n${conversationText}\n\nSummary:`;
+          const result = await model.generateContent(summaryPrompt);
+          const response = await result.response;
+          const summary = response.text();
+
+          summaries.push(`📝 **${chatName}**\n${summary}\n`);
+        }
+
+        if (summaries.length === 0) {
           const reply = { type: 'text', text: 'No messages found to summarize.' };
           return client.replyMessage(event.replyToken, reply);
         }
 
-        // Create conversation text for summarization with display names
-        const conversationText = messages
-          .map(msg => `${msg.displayName || 'User'}: ${msg.text}`)
-          .join('\n');
+        // Combine all summaries
+        const combinedSummary = summaries.join('\n---\n\n');
+        console.log('Generated summaries:', combinedSummary);
 
-        // Generate summary using Gemini AI
-        const summaryPrompt = `Please provide a concise summary of the following conversation:\n\n${conversationText}\n\nSummary:`;
-        const result = await model.generateContent(summaryPrompt);
-        const response = await result.response;
-        const summary = response.text();
-
-        console.log('Generated summary:', summary);
-
-        const reply = { type: 'text', text: `📝 **Conversation Summary**\n\n${summary}` };
+        const reply = { type: 'text', text: `📋 **Conversation Summaries**\n\n${combinedSummary}` };
         return client.replyMessage(event.replyToken, reply);
 
       } catch (summaryError) {
