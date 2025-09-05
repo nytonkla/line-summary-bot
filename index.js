@@ -70,62 +70,7 @@ async function handleEvent(event) {
   }
 
   try {
-    // Determine the chats ID (group ID or user ID)
-    const chatsId = event.source.groupId || event.source.userId;
-    const chatsType = event.source.groupId ? 'group' : 'user';
-    
-    // Get user profile (display name) and group name
-    let displayName = 'Unknown User';
-    let groupName = null;
-    try {
-      if (chatsType === 'group') {
-        // Get group member profile
-        const profile = await client.getGroupMemberProfile(event.source.groupId, event.source.userId);
-        displayName = profile.displayName;
-        
-        // Get group summary (group name)
-        try {
-          const groupSummary = await client.getGroupSummary(event.source.groupId);
-          groupName = groupSummary.groupName;
-        } catch (groupError) {
-          console.error('Error getting group name:', groupError);
-          groupName = 'Unknown Group';
-        }
-      } else {
-        // Get user profile
-        const profile = await client.getProfile(event.source.userId);
-        displayName = profile.displayName;
-      }
-    } catch (profileError) {
-      console.error('Error getting user profile:', profileError);
-      // Keep default displayName if profile fetch fails
-    }
-    
-    // Write message data to Firestore
-    const messageData = {
-      messageId: event.message.id,
-      text: event.message.text,
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      eventType: event.type,
-      messageType: event.message.type,
-      userId: event.source.userId,
-      displayName: displayName,
-      groupName: groupName,
-      chatsId: chatsId,
-      chatsType: chatsType
-    };
-
-    // Add to Firestore collection, grouped by chats
-    await db.collection('chats')
-      .doc(chatsId)
-      .collection('messages')
-      .add(messageData);
-    
-    console.log(`Message saved to Firestore for ${chatsType} ${chatsId} from ${displayName}:`, messageData);
-
-
-
-    // Check if the message is a command
+    // Check if the message is a command FIRST (before saving to database)
     if (event.message.text.toLowerCase() === '/summarize') {
       try {
         console.log('Processing /summarize command...');
@@ -206,11 +151,65 @@ async function handleEvent(event) {
         const reply = { type: 'text', text: 'Sorry, I encountered an error while generating the summary.' };
         return client.replyMessage(event.replyToken, reply);
       }
-    } else {
-      // Regular echo for non-command messages
-      const echo = { type: 'text', text: event.message.text };
-      return client.replyMessage(event.replyToken, echo);
     }
+
+    // Regular message processing (for non-command messages)
+    // Determine the chats ID (group ID or user ID)
+    const chatsId = event.source.groupId || event.source.userId;
+    const chatsType = event.source.groupId ? 'group' : 'user';
+    
+    // Get user profile (display name) and group name
+    let displayName = 'Unknown User';
+    let groupName = null;
+    try {
+      if (chatsType === 'group') {
+        // Get group member profile
+        const profile = await client.getGroupMemberProfile(event.source.groupId, event.source.userId);
+        displayName = profile.displayName;
+        
+        // Get group summary (group name)
+        try {
+          const groupSummary = await client.getGroupSummary(event.source.groupId);
+          groupName = groupSummary.groupName;
+        } catch (groupError) {
+          console.error('Error getting group name:', groupError);
+          groupName = 'Unknown Group';
+        }
+      } else {
+        // Get user profile
+        const profile = await client.getProfile(event.source.userId);
+        displayName = profile.displayName;
+      }
+    } catch (profileError) {
+      console.error('Error getting user profile:', profileError);
+      // Keep default displayName if profile fetch fails
+    }
+    
+    // Write message data to Firestore
+    const messageData = {
+      messageId: event.message.id,
+      text: event.message.text,
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      eventType: event.type,
+      messageType: event.message.type,
+      userId: event.source.userId,
+      displayName: displayName,
+      groupName: groupName,
+      chatsId: chatsId,
+      chatsType: chatsType
+    };
+
+    // Add to Firestore collection, grouped by chats
+    await db.collection('chats')
+      .doc(chatsId)
+      .collection('messages')
+      .add(messageData);
+    
+    console.log(`Message saved to Firestore for ${chatsType} ${chatsId} from ${displayName}:`, messageData);
+
+    // Regular echo for non-command messages
+    const echo = { type: 'text', text: event.message.text };
+    return client.replyMessage(event.replyToken, echo);
   } catch (error) {
     console.error('Error handling event:', error);
     // Still try to send the echo reply even if Firestore write fails
