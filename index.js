@@ -128,11 +128,14 @@ async function handleEvent(event) {
     // Check if the message is a command
     if (event.message.text.toLowerCase() === '/summarize') {
       try {
+        console.log('Processing /summarize command...');
+        
         // Get all chats (groups and users) that the user has participated in
         const allChatsSnapshot = await db.collection('chats').get();
+        console.log(`Found ${allChatsSnapshot.size} chats`);
         
         if (allChatsSnapshot.empty) {
-          const reply = { type: 'text', text: 'No messages found to summarize.' };
+          const reply = { type: 'text', text: 'No chats found to summarize.' };
           return client.replyMessage(event.replyToken, reply);
         }
 
@@ -141,6 +144,7 @@ async function handleEvent(event) {
         // Process each chat
         for (const chatDoc of allChatsSnapshot.docs) {
           const chatId = chatDoc.id;
+          console.log(`Processing chat: ${chatId}`);
           
           // Get last 20 messages from this chat
           const messagesSnapshot = await db.collection('chats')
@@ -150,14 +154,16 @@ async function handleEvent(event) {
             .limit(20)
             .get();
 
+          console.log(`Found ${messagesSnapshot.size} messages in chat ${chatId}`);
           if (messagesSnapshot.empty) continue;
 
           // Convert to array and reverse to get chronological order
           const messages = messagesSnapshot.docs
             .map(doc => doc.data())
             .reverse()
-            .filter(msg => msg.text && msg.text !== '/summarize'); // Exclude the command itself
+            .filter(msg => msg.text && msg.text.toLowerCase() !== '/summarize'); // Exclude the command itself
 
+          console.log(`After filtering, ${messages.length} messages remain in chat ${chatId}`);
           if (messages.length === 0) continue;
 
           // Get chat info (group name or user info)
@@ -165,6 +171,8 @@ async function handleEvent(event) {
           const chatName = firstMessage.chatsType === 'group' 
             ? (firstMessage.groupName || 'Unknown Group')
             : (firstMessage.displayName || 'Direct Chat');
+
+          console.log(`Generating summary for chat: ${chatName}`);
 
           // Create conversation text for this chat
           const conversationText = messages
@@ -180,8 +188,9 @@ async function handleEvent(event) {
           summaries.push(`📝 **${chatName}**\n${summary}\n`);
         }
 
+        console.log(`Generated ${summaries.length} summaries`);
         if (summaries.length === 0) {
-          const reply = { type: 'text', text: 'No messages found to summarize.' };
+          const reply = { type: 'text', text: 'No messages found to summarize. Try sending some messages first!' };
           return client.replyMessage(event.replyToken, reply);
         }
 
