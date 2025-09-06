@@ -8,7 +8,26 @@ const admin = require('firebase-admin');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 // Initialize Firebase Admin SDK
-const serviceAccount = require('./serviceAccountKey.json');
+let serviceAccount;
+try {
+  // Try to load from file first (for local development)
+  serviceAccount = require('./serviceAccountKey.json');
+} catch (error) {
+  // If file doesn't exist, try to parse from environment variable (for production)
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+    // Check if it's base64 encoded
+    if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY.startsWith('eyJ')) {
+      // Base64 encoded JSON
+      const decodedKey = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_KEY, 'base64').toString('utf-8');
+      serviceAccount = JSON.parse(decodedKey);
+    } else {
+      // Regular JSON string
+      serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+    }
+  } else {
+    throw new Error('Firebase service account key not found. Please provide serviceAccountKey.json file or FIREBASE_SERVICE_ACCOUNT_KEY environment variable.');
+  }
+}
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
