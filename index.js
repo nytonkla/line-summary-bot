@@ -75,13 +75,83 @@ async function handleEvent(event) {
       try {
         console.log('Processing /summarize command...');
         
-        // Get all chats (groups and users) that the user has participated in
+        // Try to get all chats (groups and users) that the user has participated in
+        console.log('Querying chats collection...');
         const allChatsSnapshot = await db.collection('chats').get();
         console.log(`Found ${allChatsSnapshot.size} chats`);
         
+        // Debug: List all chat IDs
+        allChatsSnapshot.docs.forEach(doc => {
+          console.log(`Chat ID: ${doc.id}`);
+        });
+        
         if (allChatsSnapshot.empty) {
-          const reply = { type: 'text', text: 'No chats found to summarize.' };
-          return client.replyMessage(event.replyToken, reply);
+          // Try alternative approach - check if there are any messages at all
+          console.log('No chats found, trying alternative query...');
+          const messagesSnapshot = await db.collectionGroup('messages').limit(5).get();
+          console.log(`Found ${messagesSnapshot.size} messages in collection group`);
+          
+          if (messagesSnapshot.empty) {
+            const reply = { type: 'text', text: 'No messages found in database. Try sending some messages first!' };
+            return client.replyMessage(event.replyToken, reply);
+          } else {
+            // Group messages by chatId
+            const chatGroups = {};
+            messagesSnapshot.docs.forEach(doc => {
+              const data = doc.data();
+              const chatId = data.chatsId;
+              if (!chatGroups[chatId]) {
+                chatGroups[chatId] = [];
+              }
+              chatGroups[chatId].push(data);
+            });
+            
+            console.log(`Found messages in ${Object.keys(chatGroups).length} chats:`, Object.keys(chatGroups));
+            
+            if (Object.keys(chatGroups).length === 0) {
+              const reply = { type: 'text', text: 'No valid chat groups found.' };
+              return client.replyMessage(event.replyToken, reply);
+            }
+            
+            // Process the grouped messages
+            const summaries = [];
+            for (const [chatId, messages] of Object.entries(chatGroups)) {
+              console.log(`Processing chat ${chatId} with ${messages.length} messages`);
+              
+              // Sort messages by timestamp and take last 20
+              const sortedMessages = messages
+                .sort((a, b) => a.timestamp?.toDate?.() - b.timestamp?.toDate?.())
+                .slice(-20)
+                .filter(msg => msg.text && msg.text.toLowerCase() !== '/summarize');
+              
+              if (sortedMessages.length === 0) continue;
+              
+              const firstMessage = sortedMessages[0];
+              const chatName = firstMessage.chatsType === 'group' 
+                ? (firstMessage.groupName || 'Unknown Group')
+                : (firstMessage.displayName || 'Direct Chat');
+              
+              const conversationText = sortedMessages
+                .map(msg => `${msg.displayName || 'User'}: ${msg.text}`)
+                .join('\n');
+              
+              const summaryPrompt = `Please provide a concise summary of the following conversation from "${chatName}":\n\n${conversationText}\n\nSummary:`;
+              const result = await model.generateContent(summaryPrompt);
+              const response = await result.response;
+              const summary = response.text();
+              
+              summaries.push(`📝 **${chatName}**\n${summary}\n`);
+            }
+            
+            if (summaries.length === 0) {
+              const reply = { type: 'text', text: 'No messages found to summarize. Try sending some messages first!' };
+              return client.replyMessage(event.replyToken, reply);
+            }
+            
+            const combinedSummary = summaries.join('\n---\n\n');
+            const reply = { type: 'text', text: `📋 **Conversation Summaries**\n\n${combinedSummary}` };
+            return client.replyMessage(event.replyToken, reply);
+          }
         }
 
         const summaries = [];
