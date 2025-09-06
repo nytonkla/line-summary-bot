@@ -144,19 +144,24 @@ async function handleEvent(event) {
                 .join('\n');
               
               const summaryPrompt = `Please provide a concise summary of the following conversation from "${chatName}":\n\n${conversationText}\n\nSummary:`;
+              console.log(`Generating summary for ${chatName}...`);
               const result = await model.generateContent(summaryPrompt);
               const response = await result.response;
               const summary = response.text();
+              console.log(`Summary generated for ${chatName}: ${summary.substring(0, 100)}...`);
               
               summaries.push(`📝 **${chatName}**\n${summary}\n`);
             }
             
+            console.log(`Generated ${summaries.length} summaries`);
             if (summaries.length === 0) {
+              console.log('No summaries generated, sending error message');
               const reply = { type: 'text', text: 'No messages found to summarize. Try sending some messages first!' };
               return client.replyMessage(event.replyToken, reply);
             }
             
             const combinedSummary = summaries.join('\n---\n\n');
+            console.log('Sending combined summary to user');
             const reply = { type: 'text', text: `📋 **Conversation Summaries**\n\n${combinedSummary}` };
             return client.replyMessage(event.replyToken, reply);
           }
