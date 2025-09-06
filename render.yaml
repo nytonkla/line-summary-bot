@@ -5,6 +5,7 @@ services:
     plan: free
     buildCommand: npm install
     startCommand: npm start
+    maxShutdownDelaySeconds: 90
     envVars:
       - key: NODE_ENV
         value: production
