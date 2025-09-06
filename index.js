@@ -288,7 +288,11 @@ async function handleEvent(event) {
       .collection('messages')
       .add(messageData);
     
-    console.log(`Message saved to Firestore for ${chatsType} ${chatsId} from ${displayName}:`, messageData);
+    // Create concise log format: a:b:c
+    const a = chatsType === 'group' ? (groupName || 'Unknown Group') : 'User';
+    const b = displayName;
+    const c = event.message.text;
+    console.log(`${a}:${b}:${c}`);
 
     // Regular echo for non-command messages
     const echo = { type: 'text', text: event.message.text };
