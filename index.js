@@ -120,11 +120,19 @@ async function handleEvent(event) {
               
               // Sort messages by timestamp and take last 20
               const sortedMessages = messages
-                .sort((a, b) => a.timestamp?.toDate?.() - b.timestamp?.toDate?.())
+                .sort((a, b) => {
+                  const timeA = a.timestamp?.toDate?.() || new Date(0);
+                  const timeB = b.timestamp?.toDate?.() || new Date(0);
+                  return timeA - timeB;
+                })
                 .slice(-20)
                 .filter(msg => msg.text && msg.text.toLowerCase() !== '/summarize');
               
-              if (sortedMessages.length === 0) continue;
+              console.log(`After filtering: ${sortedMessages.length} messages remain`);
+              if (sortedMessages.length === 0) {
+                console.log('No messages after filtering, skipping this chat');
+                continue;
+              }
               
               const firstMessage = sortedMessages[0];
               const chatName = firstMessage.chatsType === 'group' 
