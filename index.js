@@ -303,7 +303,8 @@ async function handleEvent(event) {
 
 // --- 4. START THE SERVER ---
 // Tell the server to listen for requests on a specific port
-const port = 3000;
+// Use Render's PORT environment variable, fallback to 3000 for local development
+const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Listening on port ${port}`);
 });
