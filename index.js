@@ -38,24 +38,60 @@ const app = express();
 // Endpoint to show the bot status and last 20 messages
 app.get('/', async (req, res) => {
   try {
-    // Get last 20 messages from all chats
-    const messagesSnapshot = await db.collectionGroup('messages')
-      .orderBy('timestamp', 'desc')
-      .limit(20)
-      .get();
+    // Get all chats first
+    const chatsSnapshot = await db.collection('chats').get();
+    
+    if (chatsSnapshot.empty) {
+      res.json({
+        message: 'LINE Summary Bot is running!',
+        status: 'active',
+        webhook: '/webhook',
+        features: [
+          'Message storage (no echo)',
+          'AI-powered conversation summarization with /summarize command',
+          'Firebase data storage'
+        ],
+        lastMessages: [],
+        totalMessages: 0,
+        note: 'No messages found in database yet'
+      });
+      return;
+    }
 
-    const messages = messagesSnapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
-        id: doc.id,
-        text: data.text,
-        displayName: data.displayName,
-        groupName: data.groupName,
-        chatsType: data.chatsType,
-        timestamp: data.timestamp?.toDate?.() || null,
-        userId: data.userId
-      };
-    });
+    // Collect messages from all chats
+    const allMessages = [];
+    
+    for (const chatDoc of chatsSnapshot.docs) {
+      const chatId = chatDoc.id;
+      const messagesSnapshot = await db.collection('chats')
+        .doc(chatId)
+        .collection('messages')
+        .limit(10) // Get up to 10 messages per chat
+        .get();
+      
+      messagesSnapshot.docs.forEach(doc => {
+        const data = doc.data();
+        allMessages.push({
+          id: doc.id,
+          text: data.text,
+          displayName: data.displayName,
+          groupName: data.groupName,
+          chatsType: data.chatsType,
+          timestamp: data.timestamp?.toDate?.() || null,
+          userId: data.userId,
+          chatId: chatId
+        });
+      });
+    }
+
+    // Sort by timestamp and take last 20
+    const sortedMessages = allMessages
+      .sort((a, b) => {
+        const timeA = a.timestamp || new Date(0);
+        const timeB = b.timestamp || new Date(0);
+        return timeB - timeA; // Descending order
+      })
+      .slice(0, 20);
 
     res.json({
       message: 'LINE Summary Bot is running!',
@@ -66,8 +102,8 @@ app.get('/', async (req, res) => {
         'AI-powered conversation summarization with /summarize command',
         'Firebase data storage'
       ],
-      lastMessages: messages,
-      totalMessages: messages.length
+      lastMessages: sortedMessages,
+      totalMessages: sortedMessages.length
     });
   } catch (error) {
     console.error('Error fetching messages:', error);
@@ -75,7 +111,8 @@ app.get('/', async (req, res) => {
       message: 'LINE Summary Bot is running!',
       status: 'active',
       webhook: '/webhook',
-      error: 'Failed to fetch messages from database'
+      error: 'Failed to fetch messages from database',
+      errorDetails: error.message
     });
   }
 });
