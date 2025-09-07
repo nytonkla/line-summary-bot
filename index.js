@@ -83,6 +83,13 @@ app.get('/', async (req, res) => {
       
       messagesSnapshot.docs.forEach(doc => {
         const data = doc.data();
+        console.log(`Root endpoint: Message data:`, {
+          id: doc.id,
+          text: data.text,
+          timestamp: data.timestamp,
+          hasTimestamp: !!data.timestamp
+        });
+        
         allMessages.push({
           id: doc.id,
           text: data.text,
@@ -367,8 +374,19 @@ async function handleEvent(event) {
     // Add to Firestore collection, grouped by chats
     console.log(`Attempting to save message to Firestore for ${chatsType} ${chatsId} from ${displayName}`);
     try {
-      const docRef = await db.collection('chats')
-        .doc(chatsId)
+      // First, ensure the chat document exists
+      const chatDocRef = db.collection('chats').doc(chatsId);
+      await chatDocRef.set({
+        chatsId: chatsId,
+        chatsType: chatsType,
+        groupName: groupName,
+        lastActivity: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+      console.log(`Chat document ensured for ${chatsId}`);
+      
+      // Then add the message
+      const docRef = await chatDocRef
         .collection('messages')
         .add(messageData);
       console.log(`Message saved successfully with ID: ${docRef.id}`);
