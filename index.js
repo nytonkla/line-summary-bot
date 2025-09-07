@@ -42,7 +42,7 @@ const app = express();
 // Endpoint to show the bot status and last 20 messages
 app.get('/', async (req, res) => {
   try {
-    console.log('Root endpoint: Fetching messages from database...');
+    // console.log('Root endpoint: Fetching messages from database...');
     
     // Get all chats first
     const chatsSnapshot = await db.collection('chats').get();
@@ -71,7 +71,7 @@ app.get('/', async (req, res) => {
     
     for (const chatDoc of chatsSnapshot.docs) {
       const chatId = chatDoc.id;
-      console.log(`Root endpoint: Checking chat ${chatId}`);
+      // console.log(`Root endpoint: Checking chat ${chatId}`);
       
       const messagesSnapshot = await db.collection('chats')
         .doc(chatId)
@@ -83,12 +83,12 @@ app.get('/', async (req, res) => {
       
       messagesSnapshot.docs.forEach(doc => {
         const data = doc.data();
-        console.log(`Root endpoint: Message data:`, {
-          id: doc.id,
-          text: data.text,
-          timestamp: data.timestamp,
-          hasTimestamp: !!data.timestamp
-        });
+        // console.log(`Root endpoint: Message data:`, {
+        //   id: doc.id,
+        //   text: data.text,
+        //   timestamp: data.timestamp,
+        //   hasTimestamp: !!data.timestamp
+        // });
         
         allMessages.push({
           id: doc.id,
@@ -395,7 +395,7 @@ async function handleEvent(event) {
       throw firestoreError;
     }
     
-    console.log(`Message saved to Firestore for ${chatsType} ${chatsId} from ${displayName}:`, messageData);
+    console.log(`Message saved to Firestore for ${chatsType} from ${displayName}:`, messageData);
 
     // Don't echo messages anymore, just save to database
     return Promise.resolve(null);
