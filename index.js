@@ -6,6 +6,7 @@ const express = require('express');
 const line = require('@line/bot-sdk');
 const admin = require('firebase-admin');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { google } = require('googleapis');
 
 // Initialize Firebase Admin SDK
 console.log('Initializing Firebase...');
@@ -25,6 +26,48 @@ console.log('Firestore database connection established');
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
+// Function to fetch data from Google Sheets
+async function fetchGoogleSheetsData() {
+  try {
+    console.log('Fetching data from Google Sheets...');
+    
+    // Extract spreadsheet ID from the URL
+    const url = process.env.KLA_DOWNLOAD_CODE_URL;
+    const spreadsheetId = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/)?.[1];
+    
+    if (!spreadsheetId) {
+      throw new Error('Could not extract spreadsheet ID from URL');
+    }
+    
+    console.log('Spreadsheet ID:', spreadsheetId);
+    
+    // Initialize Google Sheets API (using API key for public sheets)
+    const sheets = google.sheets({ version: 'v4', auth: process.env.GOOGLE_API_KEY });
+    
+    // Fetch data from the sheet
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: spreadsheetId,
+      range: 'A:C', // Get columns A, B, C (status, code, link)
+    });
+    
+    const rows = response.data.values;
+    console.log(`Fetched ${rows.length} rows from Google Sheets`);
+    
+    // Convert to array of objects
+    const data = rows.slice(1).map((row, index) => ({
+      row: index + 2, // Excel row number (accounting for header)
+      status: row[0] || '',
+      code: row[1] || '',
+      link: row[2] || ''
+    }));
+    
+    return data;
+  } catch (error) {
+    console.error('Error fetching Google Sheets data:', error);
+    return [];
+  }
+}
+
 // --- 1. SET UP YOUR CONFIGURATION ---
 // Get your Channel Access Token and Channel Secret from the LINE Developers Console
 const config = {
@@ -38,7 +81,26 @@ const client = new line.Client(config);
 // Create an Express application
 const app = express();
 
-// --- 2. ADD ROOT ENDPOINT ---
+// --- 2. ADD GOOGLE SHEETS ENDPOINT ---
+// Endpoint to fetch and display Google Sheets data
+app.get('/sheets', async (req, res) => {
+  try {
+    const sheetsData = await fetchGoogleSheetsData();
+    res.json({
+      message: 'Google Sheets Data',
+      totalRows: sheetsData.length,
+      data: sheetsData
+    });
+  } catch (error) {
+    console.error('Error in /sheets endpoint:', error);
+    res.status(500).json({
+      error: 'Failed to fetch Google Sheets data',
+      details: error.message
+    });
+  }
+});
+
+// --- 3. ADD ROOT ENDPOINT ---
 // Endpoint to show the bot status and last 20 messages
 app.get('/', async (req, res) => {
   try {

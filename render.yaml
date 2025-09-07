@@ -19,3 +19,7 @@ services:
         sync: false
       - key: FIREBASE_DATABASE_URL
         sync: false
+      - key: KLA_DOWNLOAD_CODE_URL
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
