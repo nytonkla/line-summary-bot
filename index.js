@@ -35,18 +35,49 @@ const client = new line.Client(config);
 const app = express();
 
 // --- 2. ADD ROOT ENDPOINT ---
-// Simple endpoint to show the bot is running
-app.get('/', (req, res) => {
-  res.json({
-    message: 'LINE Summary Bot is running!',
-    status: 'active',
-    webhook: '/webhook',
-    features: [
-      'Message echo',
-      'AI-powered conversation summarization with /summarize command',
-      'Firebase data storage'
-    ]
-  });
+// Endpoint to show the bot status and last 20 messages
+app.get('/', async (req, res) => {
+  try {
+    // Get last 20 messages from all chats
+    const messagesSnapshot = await db.collectionGroup('messages')
+      .orderBy('timestamp', 'desc')
+      .limit(20)
+      .get();
+
+    const messages = messagesSnapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        text: data.text,
+        displayName: data.displayName,
+        groupName: data.groupName,
+        chatsType: data.chatsType,
+        timestamp: data.timestamp?.toDate?.() || null,
+        userId: data.userId
+      };
+    });
+
+    res.json({
+      message: 'LINE Summary Bot is running!',
+      status: 'active',
+      webhook: '/webhook',
+      features: [
+        'Message storage (no echo)',
+        'AI-powered conversation summarization with /summarize command',
+        'Firebase data storage'
+      ],
+      lastMessages: messages,
+      totalMessages: messages.length
+    });
+  } catch (error) {
+    console.error('Error fetching messages:', error);
+    res.json({
+      message: 'LINE Summary Bot is running!',
+      status: 'active',
+      webhook: '/webhook',
+      error: 'Failed to fetch messages from database'
+    });
+  }
 });
 
 // --- 3. CREATE THE WEBHOOK ---
@@ -290,9 +321,8 @@ async function handleEvent(event) {
     
     console.log(`Message saved to Firestore for ${chatsType} ${chatsId} from ${displayName}:`, messageData);
 
-    // Regular echo for non-command messages
-    const echo = { type: 'text', text: event.message.text };
-    return client.replyMessage(event.replyToken, echo);
+    // Don't echo messages anymore, just save to database
+    return Promise.resolve(null);
   } catch (error) {
     console.error('Error handling event:', error);
     // Still try to send the echo reply even if Firestore write fails
