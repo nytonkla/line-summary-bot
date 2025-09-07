@@ -8,14 +8,18 @@ const admin = require('firebase-admin');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 // Initialize Firebase Admin SDK
+console.log('Initializing Firebase...');
 const serviceAccount = require('./serviceAccountKey.json');
+console.log('Service account loaded successfully');
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
   databaseURL: process.env.FIREBASE_DATABASE_URL
 });
+console.log('Firebase app initialized');
 
 const db = admin.firestore();
+console.log('Firestore database connection established');
 
 // Initialize Google AI (Gemini)
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -361,10 +365,17 @@ async function handleEvent(event) {
     };
 
     // Add to Firestore collection, grouped by chats
-    await db.collection('chats')
-      .doc(chatsId)
-      .collection('messages')
-      .add(messageData);
+    console.log(`Attempting to save message to Firestore for ${chatsType} ${chatsId} from ${displayName}`);
+    try {
+      const docRef = await db.collection('chats')
+        .doc(chatsId)
+        .collection('messages')
+        .add(messageData);
+      console.log(`Message saved successfully with ID: ${docRef.id}`);
+    } catch (firestoreError) {
+      console.error('Firestore save error:', firestoreError);
+      throw firestoreError;
+    }
     
     console.log(`Message saved to Firestore for ${chatsType} ${chatsId} from ${displayName}:`, messageData);
 
