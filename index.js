@@ -38,10 +38,14 @@ const app = express();
 // Endpoint to show the bot status and last 20 messages
 app.get('/', async (req, res) => {
   try {
+    console.log('Root endpoint: Fetching messages from database...');
+    
     // Get all chats first
     const chatsSnapshot = await db.collection('chats').get();
+    console.log(`Root endpoint: Found ${chatsSnapshot.size} chats`);
     
     if (chatsSnapshot.empty) {
+      console.log('Root endpoint: No chats found');
       res.json({
         message: 'LINE Summary Bot is running!',
         status: 'active',
@@ -53,7 +57,7 @@ app.get('/', async (req, res) => {
         ],
         lastMessages: [],
         totalMessages: 0,
-        note: 'No messages found in database yet'
+        note: 'No chats found in database yet'
       });
       return;
     }
@@ -63,11 +67,15 @@ app.get('/', async (req, res) => {
     
     for (const chatDoc of chatsSnapshot.docs) {
       const chatId = chatDoc.id;
+      console.log(`Root endpoint: Checking chat ${chatId}`);
+      
       const messagesSnapshot = await db.collection('chats')
         .doc(chatId)
         .collection('messages')
         .limit(10) // Get up to 10 messages per chat
         .get();
+      
+      console.log(`Root endpoint: Found ${messagesSnapshot.size} messages in chat ${chatId}`);
       
       messagesSnapshot.docs.forEach(doc => {
         const data = doc.data();
@@ -83,6 +91,8 @@ app.get('/', async (req, res) => {
         });
       });
     }
+    
+    console.log(`Root endpoint: Total messages collected: ${allMessages.length}`);
 
     // Sort by timestamp and take last 20
     const sortedMessages = allMessages
