@@ -227,7 +227,7 @@ async function handleEvent(event) {
         console.log('Processing /summarize command...');
         
         // Try to get all chats (groups and users) that the user has participated in
-        console.log('Querying chats collection...');
+        //console.log('Querying chats collection...');
         const allChatsSnapshot = await db.collection('chats').get();
         console.log(`Found ${allChatsSnapshot.size} chats`);
         
@@ -385,6 +385,26 @@ async function handleEvent(event) {
         const reply = { type: 'text', text: 'Sorry, I encountered an error while generating the summary.' };
         return client.replyMessage(event.replyToken, reply);
       }
+    }
+
+    // Check if message text matches any code from Google Sheets
+    try {
+      console.log(`Checking if "${event.message.text}" matches any code from Google Sheets...`);
+      const sheetsData = await fetchGoogleSheetsData();
+      
+      // Find exact match for the message text in the "code" column
+      const matchingRow = sheetsData.find(row => row.code === event.message.text);
+      
+      if (matchingRow) {
+        console.log(`Found matching code: ${matchingRow.code} -> ${matchingRow.link}`);
+        const reply = { type: 'text', text: matchingRow.link };
+        return client.replyMessage(event.replyToken, reply);
+      } else {
+        console.log(`No matching code found for: "${event.message.text}"`);
+      }
+    } catch (codeCheckError) {
+      console.error('Error checking code from Google Sheets:', codeCheckError);
+      // Continue with regular message processing if code check fails
     }
 
     // Regular message processing (for non-command messages)
