@@ -6,6 +6,9 @@ yarn-error.log*
 
 # Firebase service account key (contains sensitive credentials)
 serviceAccountKey.json
+*.json
+!package.json
+!package-lock.json
 
 # Environment variables
 .env

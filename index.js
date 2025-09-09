@@ -232,10 +232,10 @@ async function handleEvent(event) {
         console.log(`Found ${allChatsSnapshot.size} chats`);
         
         // Debug: List all chat IDs
-        allChatsSnapshot.docs.forEach(doc => {
-          console.log(`Chat ID: ${doc.id}`);
-        });
-        
+        // Debug: List all chat IDs
+        // allChatsSnapshot.docs.forEach(doc => {
+        //   console.log(`Chat ID: ${doc.id}`);
+        // });
         if (allChatsSnapshot.empty) {
           // Try alternative approach - check if there are any messages at all
           console.log('No chats found, trying alternative query...');
@@ -323,7 +323,7 @@ async function handleEvent(event) {
         // Process each chat
         for (const chatDoc of allChatsSnapshot.docs) {
           const chatId = chatDoc.id;
-          console.log(`Processing chat: ${chatId}`);
+          //console.log(`Processing chat: ${chatId}`);
           
           // Get last 20 messages from this chat
           const messagesSnapshot = await db.collection('chats')
@@ -342,7 +342,7 @@ async function handleEvent(event) {
             .reverse()
             .filter(msg => msg.text && msg.text.toLowerCase() !== '/summarize'); // Exclude the command itself
 
-          console.log(`After filtering, ${messages.length} messages remain in chat ${chatId}`);
+          //console.log(`After filtering, ${messages.length} messages remain in chat ${chatId}`);
           if (messages.length === 0) continue;
 
           // Get chat info (group name or user info)
@@ -375,7 +375,7 @@ async function handleEvent(event) {
 
         // Combine all summaries
         const combinedSummary = summaries.join('\n---\n\n');
-        console.log('Generated summaries:', combinedSummary);
+        //console.log('Generated summaries:', combinedSummary);
 
         const reply = { type: 'text', text: `📋 **Conversation Summaries**\n\n${combinedSummary}` };
         return client.replyMessage(event.replyToken, reply);
