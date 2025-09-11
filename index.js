@@ -258,6 +258,16 @@ async function handleEvent(event) {
       try {
         console.log('Processing /summarize command...');
         
+        // Get the last summary timestamp to filter messages BEFORE saving current command
+        const lastSummaryTimestamp = await getLastSummaryTimestamp();
+        console.log('Last summary timestamp:', lastSummaryTimestamp);
+        if (lastSummaryTimestamp) {
+          console.log('Last summary timestamp (formatted):', lastSummaryTimestamp.toDate());
+          console.log('Last summary timestamp (ISO string):', lastSummaryTimestamp.toDate().toISOString());
+        } else {
+          console.log('No previous summary timestamp found - will take last 30 messages');
+        }
+        
         // Store the /summarize command in database
         try {
           const commandData = {
@@ -284,16 +294,6 @@ async function handleEvent(event) {
           console.log('Current command timestamp (server timestamp):', new Date().toISOString());
         } catch (commandError) {
           console.error('Error saving /summarize command:', commandError);
-        }
-        
-        // Get the last summary timestamp to filter messages
-        const lastSummaryTimestamp = await getLastSummaryTimestamp();
-        console.log('Last summary timestamp:', lastSummaryTimestamp);
-        if (lastSummaryTimestamp) {
-          console.log('Last summary timestamp (formatted):', lastSummaryTimestamp.toDate());
-          console.log('Last summary timestamp (ISO string):', lastSummaryTimestamp.toDate().toISOString());
-        } else {
-          console.log('No previous summary timestamp found - will take last 30 messages');
         }
         
         // Try to get all chats (groups and users) that the user has participated in
