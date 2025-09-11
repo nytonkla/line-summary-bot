@@ -404,9 +404,14 @@ async function handleEvent(event) {
             
             // Split the summary into multiple messages if it's too long
             const summaryMessages = splitIntoMessages(`📋 **Conversation Summaries**\n\n${combinedSummary}`);
-            const replyMessages = summaryMessages.map(text => ({ type: 'text', text }));
             
-            return client.replyMessage(event.replyToken, replyMessages);
+            // Create an array of message objects
+            const messages = summaryMessages.map(text => ({
+              type: 'text',
+              text: text
+            }));
+            
+            return client.replyMessage(event.replyToken, messages);
           }
         }
 
@@ -486,9 +491,14 @@ async function handleEvent(event) {
         
         // Split the summary into multiple messages if it's too long
         const summaryMessages = splitIntoMessages(`📋 **Conversation Summaries**\n\n${combinedSummary}`);
-        const replyMessages = summaryMessages.map(text => ({ type: 'text', text }));
         
-        return client.replyMessage(event.replyToken, replyMessages);
+        // Create an array of message objects
+        const messages = summaryMessages.map(text => ({
+          type: 'text',
+          text: text
+        }));
+        
+        return client.replyMessage(event.replyToken, messages);
 
       } catch (summaryError) {
         console.error('Error generating summary:', summaryError);
