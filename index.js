@@ -26,31 +26,43 @@ console.log('Firestore database connection established');
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
+// Function to split long text into multiple messages (LINE has 5000 char limit per message)
+function splitIntoMessages(text, maxLength = 4000) {
+  const messages = [];
+  const lines = text.split('\n');
+  let currentMessage = '';
+  
+  for (const line of lines) {
+    // If adding this line would exceed the limit, start a new message
+    if (currentMessage.length + line.length + 1 > maxLength && currentMessage.length > 0) {
+      messages.push(currentMessage.trim());
+      currentMessage = line;
+    } else {
+      currentMessage += (currentMessage.length > 0 ? '\n' : '') + line;
+    }
+  }
+  
+  // Add the last message if it has content
+  if (currentMessage.trim().length > 0) {
+    messages.push(currentMessage.trim());
+  }
+  
+  return messages;
+}
+
 // Function to get the last summary timestamp from commands collection
 async function getLastSummaryTimestamp() {
   try {
-    console.log('Querying commands collection for last /summarize command...');
     const commandsSnapshot = await db.collection('commands')
       .where('commandText', '==', '/summarize')
       .orderBy('timestamp', 'desc')
       .limit(1)
       .get();
     
-    console.log(`Found ${commandsSnapshot.size} /summarize commands in database`);
-    
     if (!commandsSnapshot.empty) {
       const lastCommand = commandsSnapshot.docs[0].data();
-      console.log('Last /summarize command data:', {
-        commandID: lastCommand.commandID,
-        displayName: lastCommand.displayName,
-        timestamp: lastCommand.timestamp,
-        timestampFormatted: lastCommand.timestamp?.toDate?.()?.toISOString(),
-        userId: lastCommand.userId,
-        chatsId: lastCommand.chatsId
-      });
       return lastCommand.timestamp;
     }
-    console.log('No previous /summarize commands found');
     return null;
   } catch (error) {
     console.error('Error getting last summary timestamp:', error);
@@ -260,13 +272,7 @@ async function handleEvent(event) {
         
         // Get the last summary timestamp to filter messages BEFORE saving current command
         const lastSummaryTimestamp = await getLastSummaryTimestamp();
-        console.log('Last summary timestamp:', lastSummaryTimestamp);
-        if (lastSummaryTimestamp) {
-          console.log('Last summary timestamp (formatted):', lastSummaryTimestamp.toDate());
-          console.log('Last summary timestamp (ISO string):', lastSummaryTimestamp.toDate().toISOString());
-        } else {
-          console.log('No previous summary timestamp found - will take last 30 messages');
-        }
+        console.log('Last summary timestamp:', lastSummaryTimestamp ? lastSummaryTimestamp.toDate().toISOString() : 'None found');
         
         // Store the /summarize command in database
         try {
@@ -291,7 +297,6 @@ async function handleEvent(event) {
           
           await db.collection('commands').add(commandData);
           console.log(`Command saved: /summarize from ${commandData.displayName}`);
-          console.log('Current command timestamp (server timestamp):', new Date().toISOString());
         } catch (commandError) {
           console.error('Error saving /summarize command:', commandError);
         }
@@ -342,35 +347,12 @@ async function handleEvent(event) {
               let filteredMessages = messages.filter(msg => msg.text && msg.text.toLowerCase() !== '/summarize');
               
               if (lastSummaryTimestamp) {
-                console.log(`\n=== TIMESTAMP FILTERING DEBUG (alternative path) ===`);
-                console.log(`Last summary timestamp: ${lastSummaryTimestamp.toDate().toISOString()}`);
-                console.log(`Total messages before filtering: ${filteredMessages.length}`);
-                
-                // Log first few message timestamps for debugging
-                console.log('Sample message timestamps:');
-                filteredMessages.slice(0, 5).forEach((msg, index) => {
-                  if (msg.timestamp) {
-                    console.log(`  Message ${index + 1}: ${msg.timestamp.toDate().toISOString()} (${msg.text?.substring(0, 50)}...)`);
-                  } else {
-                    console.log(`  Message ${index + 1}: NO TIMESTAMP (${msg.text?.substring(0, 50)}...)`);
-                  }
-                });
-                
                 // Filter messages after the last summary timestamp
-                const originalCount = filteredMessages.length;
                 filteredMessages = filteredMessages.filter(msg => {
-                  if (!msg.timestamp) {
-                    console.log(`  Filtering out message with no timestamp: ${msg.text?.substring(0, 50)}...`);
-                    return false;
-                  }
-                  const msgTime = msg.timestamp.toDate();
-                  const lastSummaryTime = lastSummaryTimestamp.toDate();
-                  const isAfter = msgTime > lastSummaryTime;
-                  console.log(`  Message ${msg.timestamp.toDate().toISOString()} > ${lastSummaryTimestamp.toDate().toISOString()}? ${isAfter} (${msg.text?.substring(0, 30)}...)`);
-                  return isAfter;
+                  if (!msg.timestamp) return false;
+                  return msg.timestamp.toDate() > lastSummaryTimestamp.toDate();
                 });
-                console.log(`After filtering by timestamp: ${filteredMessages.length} messages remain (filtered out ${originalCount - filteredMessages.length} messages)`);
-                console.log(`=== END TIMESTAMP FILTERING DEBUG (alternative path) ===\n`);
+                console.log(`After filtering by timestamp: ${filteredMessages.length} messages remain`);
               } else {
                 // If no previous summary, take last 30 messages
                 filteredMessages = filteredMessages
@@ -419,8 +401,12 @@ async function handleEvent(event) {
             
             const combinedSummary = summaries.join('\n---\n\n');
             console.log('Sending combined summary to user');
-            const reply = { type: 'text', text: `📋 **Conversation Summaries**\n\n${combinedSummary}` };
-            return client.replyMessage(event.replyToken, reply);
+            
+            // Split the summary into multiple messages if it's too long
+            const summaryMessages = splitIntoMessages(`📋 **Conversation Summaries**\n\n${combinedSummary}`);
+            const replyMessages = summaryMessages.map(text => ({ type: 'text', text }));
+            
+            return client.replyMessage(event.replyToken, replyMessages);
           }
         }
 
@@ -451,35 +437,12 @@ async function handleEvent(event) {
 
           // Filter messages based on last summary timestamp
           if (lastSummaryTimestamp) {
-            console.log(`\n=== TIMESTAMP FILTERING DEBUG for chat ${chatId} ===`);
-            console.log(`Last summary timestamp: ${lastSummaryTimestamp.toDate().toISOString()}`);
-            console.log(`Total messages before filtering: ${messages.length}`);
-            
-            // Log first few message timestamps for debugging
-            console.log('Sample message timestamps:');
-            messages.slice(0, 5).forEach((msg, index) => {
-              if (msg.timestamp) {
-                console.log(`  Message ${index + 1}: ${msg.timestamp.toDate().toISOString()} (${msg.text?.substring(0, 50)}...)`);
-              } else {
-                console.log(`  Message ${index + 1}: NO TIMESTAMP (${msg.text?.substring(0, 50)}...)`);
-              }
-            });
-            
             // Filter messages after the last summary timestamp
-            const originalCount = messages.length;
             messages = messages.filter(msg => {
-              if (!msg.timestamp) {
-                console.log(`  Filtering out message with no timestamp: ${msg.text?.substring(0, 50)}...`);
-                return false;
-              }
-              const msgTime = msg.timestamp.toDate();
-              const lastSummaryTime = lastSummaryTimestamp.toDate();
-              const isAfter = msgTime > lastSummaryTime;
-              console.log(`  Message ${msg.timestamp.toDate().toISOString()} > ${lastSummaryTimestamp.toDate().toISOString()}? ${isAfter} (${msg.text?.substring(0, 30)}...)`);
-              return isAfter;
+              if (!msg.timestamp) return false;
+              return msg.timestamp.toDate() > lastSummaryTimestamp.toDate();
             });
-            console.log(`After filtering by timestamp: ${messages.length} messages remain in chat ${chatId} (filtered out ${originalCount - messages.length} messages)`);
-            console.log(`=== END TIMESTAMP FILTERING DEBUG ===\n`);
+            console.log(`After filtering by timestamp: ${messages.length} messages remain in chat ${chatId}`);
           } else {
             // If no previous summary, take last 30 messages
             messages = messages.slice(-30);
@@ -519,10 +482,13 @@ async function handleEvent(event) {
 
         // Combine all summaries
         const combinedSummary = summaries.join('\n---\n\n');
-        //console.log('Generated summaries:', combinedSummary);
-
-        const reply = { type: 'text', text: `📋 **Conversation Summaries**\n\n${combinedSummary}` };
-        return client.replyMessage(event.replyToken, reply);
+        console.log('Sending combined summary to user');
+        
+        // Split the summary into multiple messages if it's too long
+        const summaryMessages = splitIntoMessages(`📋 **Conversation Summaries**\n\n${combinedSummary}`);
+        const replyMessages = summaryMessages.map(text => ({ type: 'text', text }));
+        
+        return client.replyMessage(event.replyToken, replyMessages);
 
       } catch (summaryError) {
         console.error('Error generating summary:', summaryError);
