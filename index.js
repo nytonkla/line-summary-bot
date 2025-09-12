@@ -293,6 +293,30 @@ async function handleEvent(event) {
 
   try {
     // Check if the message is a command FIRST (before saving to database)
+    if (event.message.text.toLowerCase() === '/updatecode') {
+      try {
+        console.log('Processing /updatecode command...');
+        
+        // Fetch fresh Google Sheets data
+        const updatedData = await fetchGoogleSheetsData();
+        console.log(`Code data updated successfully. Found ${updatedData.length} entries.`);
+        
+        const reply = { 
+          type: 'text', 
+          text: `✅ Code data updated successfully!\n\n📊 Found ${updatedData.length} code entries\n🔄 Cache refreshed at ${new Date().toLocaleString()}` 
+        };
+        return client.replyMessage(event.replyToken, reply);
+        
+      } catch (updateError) {
+        console.error('Error updating code data:', updateError);
+        const reply = { 
+          type: 'text', 
+          text: '❌ Sorry, I encountered an error while updating the code data. Please try again later.' 
+        };
+        return client.replyMessage(event.replyToken, reply);
+      }
+    }
+    
     if (event.message.text.toLowerCase() === '/summarize') {
       try {
         console.log('Processing /summarize command...');
@@ -623,7 +647,7 @@ async function handleEvent(event) {
       throw firestoreError;
     }
     
-    console.log(`Message saved to Firestore for ${chatsType} from ${displayName}:`, messageData);
+    console.log(`Message saved to Firestore for ${chatsType} from ${displayName}:`, messageData.text);
 
     // Don't echo messages anymore, just save to database
     return Promise.resolve(null);
