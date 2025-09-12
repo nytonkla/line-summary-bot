@@ -132,40 +132,40 @@ const client = new line.Client(config);
 // Create an Express application
 const app = express();
 
-// --- 2. ADD GOOGLE SHEETS ENDPOINTS ---
-// Endpoint to display cached Google Sheets data
-app.get('/sheets', async (req, res) => {
+// --- 2. ADD CODE ENDPOINTS ---
+// Endpoint to display cached code data
+app.get('/code', async (req, res) => {
   try {
     res.json({
-      message: 'Google Sheets Data (Cached)',
+      message: 'Code Data (Cached)',
       totalRows: cachedSheetsData.length,
       data: cachedSheetsData,
-      note: 'Data is cached at startup. Use /refetchsheet to update.'
+      note: 'Data is cached at startup. Use /codeupdate to update.'
     });
   } catch (error) {
-    console.error('Error in /sheets endpoint:', error);
+    console.error('Error in /code endpoint:', error);
     res.status(500).json({
-      error: 'Failed to get cached Google Sheets data',
+      error: 'Failed to get cached code data',
       details: error.message
     });
   }
 });
 
-// Endpoint to refetch and update Google Sheets data
-app.get('/refetchsheet', async (req, res) => {
+// Endpoint to refetch and update code data
+app.get('/codeupdate', async (req, res) => {
   try {
-    console.log('Manual refetch of Google Sheets data requested...');
+    console.log('Manual refetch of code data requested...');
     const sheetsData = await fetchGoogleSheetsData();
     res.json({
-      message: 'Google Sheets Data Refetched Successfully',
+      message: 'Code Data Refetched Successfully',
       totalRows: sheetsData.length,
       data: sheetsData,
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('Error in /refetchsheet endpoint:', error);
+    console.error('Error in /codeupdate endpoint:', error);
     res.status(500).json({
-      error: 'Failed to refetch Google Sheets data',
+      error: 'Failed to refetch code data',
       details: error.message
     });
   }
@@ -649,6 +649,6 @@ app.listen(port, async () => {
     console.log('Google Sheets data initialized successfully');
   } catch (error) {
     console.error('Failed to initialize Google Sheets data on startup:', error);
-    console.log('Bot will continue running with empty cache. Use /refetchsheet to manually update.');
+    console.log('Bot will continue running with empty cache. Use /codeupdate to manually update.');
   }
 });
