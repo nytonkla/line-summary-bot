@@ -26,6 +26,9 @@ console.log('Firestore database connection established');
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
+// Global variable to store Google Sheets data
+let cachedSheetsData = [];
+
 // Function to split long text into multiple messages (LINE has 5000 char limit per message)
 function splitIntoMessages(text, maxLength = 4000) {
   const messages = [];
@@ -70,7 +73,7 @@ async function getLastSummaryTimestamp() {
   }
 }
 
-// Function to fetch data from Google Sheets
+// Function to fetch data from Google Sheets and update cache
 async function fetchGoogleSheetsData() {
   try {
     console.log('Fetching data from Google Sheets...');
@@ -105,10 +108,14 @@ async function fetchGoogleSheetsData() {
       link: row[2] || ''
     }));
     
+    // Update the global cache
+    cachedSheetsData = data;
+    console.log(`Updated cached sheets data with ${data.length} entries`);
+    
     return data;
   } catch (error) {
     console.error('Error fetching Google Sheets data:', error);
-    return [];
+    return cachedSheetsData; // Return cached data if fetch fails
   }
 }
 
@@ -125,20 +132,40 @@ const client = new line.Client(config);
 // Create an Express application
 const app = express();
 
-// --- 2. ADD GOOGLE SHEETS ENDPOINT ---
-// Endpoint to fetch and display Google Sheets data
+// --- 2. ADD GOOGLE SHEETS ENDPOINTS ---
+// Endpoint to display cached Google Sheets data
 app.get('/sheets', async (req, res) => {
   try {
-    const sheetsData = await fetchGoogleSheetsData();
     res.json({
-      message: 'Google Sheets Data',
-      totalRows: sheetsData.length,
-      data: sheetsData
+      message: 'Google Sheets Data (Cached)',
+      totalRows: cachedSheetsData.length,
+      data: cachedSheetsData,
+      note: 'Data is cached at startup. Use /refetchsheet to update.'
     });
   } catch (error) {
     console.error('Error in /sheets endpoint:', error);
     res.status(500).json({
-      error: 'Failed to fetch Google Sheets data',
+      error: 'Failed to get cached Google Sheets data',
+      details: error.message
+    });
+  }
+});
+
+// Endpoint to refetch and update Google Sheets data
+app.get('/refetchsheet', async (req, res) => {
+  try {
+    console.log('Manual refetch of Google Sheets data requested...');
+    const sheetsData = await fetchGoogleSheetsData();
+    res.json({
+      message: 'Google Sheets Data Refetched Successfully',
+      totalRows: sheetsData.length,
+      data: sheetsData,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error in /refetchsheet endpoint:', error);
+    res.status(500).json({
+      error: 'Failed to refetch Google Sheets data',
       details: error.message
     });
   }
@@ -507,13 +534,12 @@ async function handleEvent(event) {
       }
     }
 
-    // Check if message text matches any code from Google Sheets
+    // Check if message text matches any code from cached Google Sheets data
     try {
-      console.log(`Checking if "${event.message.text}" matches any code from Google Sheets...`);
-      const sheetsData = await fetchGoogleSheetsData();
+      console.log(`Checking if "${event.message.text}" matches any code from cached Google Sheets data...`);
       
       // Find exact match for the message text in the "code" column
-      const matchingRow = sheetsData.find(row => row.code === event.message.text);
+      const matchingRow = cachedSheetsData.find(row => row.code === event.message.text);
       
       if (matchingRow) {
         console.log(`Found matching code: ${matchingRow.code} -> ${matchingRow.link}`);
@@ -523,7 +549,7 @@ async function handleEvent(event) {
         console.log(`No matching code found for: "${event.message.text}"`);
       }
     } catch (codeCheckError) {
-      console.error('Error checking code from Google Sheets:', codeCheckError);
+      console.error('Error checking code from cached Google Sheets data:', codeCheckError);
       // Continue with regular message processing if code check fails
     }
 
@@ -613,6 +639,16 @@ async function handleEvent(event) {
 // Tell the server to listen for requests on a specific port
 // Use Render's PORT environment variable, fallback to 3000 for local development
 const port = process.env.PORT || 3000;
-app.listen(port, () => {
+app.listen(port, async () => {
   console.log(`Listening on port ${port}`);
+  
+  // Initialize Google Sheets data on startup
+  try {
+    console.log('Initializing Google Sheets data on startup...');
+    await fetchGoogleSheetsData();
+    console.log('Google Sheets data initialized successfully');
+  } catch (error) {
+    console.error('Failed to initialize Google Sheets data on startup:', error);
+    console.log('Bot will continue running with empty cache. Use /refetchsheet to manually update.');
+  }
 });
