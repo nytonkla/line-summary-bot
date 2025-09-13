@@ -53,6 +53,81 @@ function splitIntoMessages(text, maxLength = 4000) {
   return messages;
 }
 
+// Rate limiting utility
+class RateLimiter {
+  constructor(maxRequests = 2, windowMs = 1000) {
+    this.maxRequests = maxRequests;
+    this.windowMs = windowMs;
+    this.requests = [];
+  }
+
+  async waitForSlot() {
+    const now = Date.now();
+    
+    // Remove old requests outside the window
+    this.requests = this.requests.filter(time => now - time < this.windowMs);
+    
+    // If we're at the limit, wait until the oldest request expires
+    if (this.requests.length >= this.maxRequests) {
+      const oldestRequest = this.requests[0];
+      const waitTime = this.windowMs - (now - oldestRequest);
+      if (waitTime > 0) {
+        console.log(`Rate limit reached. Waiting ${waitTime}ms...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        return this.waitForSlot(); // Recursively check again
+      }
+    }
+    
+    // Record this request
+    this.requests.push(now);
+  }
+}
+
+// Create a global rate limiter for Gemini API calls
+const geminiRateLimiter = new RateLimiter(1, 2000); // Max 1 request per 2 seconds
+
+// Enhanced function to generate content with retry logic and rate limiting
+async function generateContentWithRetry(prompt, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // Wait for rate limiter
+      await geminiRateLimiter.waitForSlot();
+      
+      console.log(`Generating content (attempt ${attempt}/${maxRetries})...`);
+      const result = await model.generateContent(prompt);
+      const response = await result.response;
+      const text = response.text();
+      
+      console.log(`Content generated successfully on attempt ${attempt}`);
+      return text;
+      
+    } catch (error) {
+      console.error(`Attempt ${attempt} failed:`, error.message);
+      
+      // Check if it's a rate limit error
+      if (error.message && (
+        error.message.includes('429') || 
+        error.message.includes('TooManyRequests') ||
+        error.message.includes('quota') ||
+        error.message.includes('rate limit')
+      )) {
+        if (attempt < maxRetries) {
+          // Exponential backoff: wait 2^attempt seconds
+          const waitTime = Math.pow(2, attempt) * 1000;
+          console.log(`Rate limit hit. Waiting ${waitTime}ms before retry ${attempt + 1}...`);
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+          continue;
+        } else {
+          throw new Error(`Rate limit exceeded after ${maxRetries} attempts. Please try again later.`);
+        }
+      } else {
+        // For non-rate-limit errors, throw immediately
+        throw error;
+      }
+    }
+  }
+}
+
 // Function to get the last summary timestamp from commands collection
 async function getLastSummaryTimestamp() {
   try {
@@ -389,9 +464,14 @@ async function handleEvent(event) {
               return client.replyMessage(event.replyToken, reply);
             }
             
-            // Process the grouped messages
+            // Process the grouped messages (limit to avoid API overload)
             const summaries = [];
-            for (const [chatId, messages] of Object.entries(chatGroups)) {
+            const maxChatsToProcess = 5;
+            const chatEntries = Object.entries(chatGroups).slice(0, maxChatsToProcess);
+            
+            console.log(`Processing ${chatEntries.length} out of ${Object.keys(chatGroups).length} chats (limited to ${maxChatsToProcess})`);
+            
+            for (const [chatId, messages] of chatEntries) {
               console.log(`Processing chat ${chatId} with ${messages.length} messages`);
               
               // Filter messages based on last summary timestamp
@@ -435,9 +515,7 @@ async function handleEvent(event) {
               
               const summaryPrompt = `Please provide a concise summary of the following conversation from "${chatName}":\n\n${conversationText}\n\nSummary:`;
               console.log(`Generating summary for ${chatName}...`);
-              const result = await model.generateContent(summaryPrompt);
-              const response = await result.response;
-              const summary = response.text();
+              const summary = await generateContentWithRetry(summaryPrompt);
               console.log(`Summary generated for ${chatName}: ${summary.substring(0, 100)}...`);
               
               summaries.push(`📝 **${chatName}**\n${summary}\n`);
@@ -468,8 +546,14 @@ async function handleEvent(event) {
 
         const summaries = [];
         
+        // Limit the number of chats to process to avoid overwhelming the API
+        const maxChatsToProcess = 5; // Process maximum 5 chats at once
+        const chatsToProcess = allChatsSnapshot.docs.slice(0, maxChatsToProcess);
+        
+        console.log(`Processing ${chatsToProcess.length} out of ${allChatsSnapshot.docs.length} chats (limited to ${maxChatsToProcess})`);
+        
         // Process each chat
-        for (const chatDoc of allChatsSnapshot.docs) {
+        for (const chatDoc of chatsToProcess) {
           const chatId = chatDoc.id;
           //console.log(`Processing chat: ${chatId}`);
           
@@ -523,9 +607,7 @@ async function handleEvent(event) {
 
           // Generate summary for this chat
           const summaryPrompt = `Please provide a concise summary of the following conversation from "${chatName}":\n\n${conversationText}\n\nSummary:`;
-          const result = await model.generateContent(summaryPrompt);
-          const response = await result.response;
-          const summary = response.text();
+          const summary = await generateContentWithRetry(summaryPrompt);
 
           summaries.push(`📝 **${chatName}**\n${summary}\n`);
         }
@@ -553,7 +635,19 @@ async function handleEvent(event) {
 
       } catch (summaryError) {
         console.error('Error generating summary:', summaryError);
-        const reply = { type: 'text', text: 'Sorry, I encountered an error while generating the summary.' };
+        
+        let errorMessage = 'Sorry, I encountered an error while generating the summary.';
+        
+        // Provide more specific error messages
+        if (summaryError.message && summaryError.message.includes('Rate limit exceeded')) {
+          errorMessage = '⏰ I\'m currently rate limited by the AI service. Please wait a moment and try again in a few minutes.';
+        } else if (summaryError.message && summaryError.message.includes('quota')) {
+          errorMessage = '📊 I\'ve reached my daily quota limit for AI requests. Please try again tomorrow.';
+        } else if (summaryError.message && summaryError.message.includes('429')) {
+          errorMessage = '🚦 Too many requests at once. Please wait a moment before trying again.';
+        }
+        
+        const reply = { type: 'text', text: errorMessage };
         return client.replyMessage(event.replyToken, reply);
       }
     }
