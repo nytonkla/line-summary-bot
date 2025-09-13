@@ -247,80 +247,30 @@ app.get('/codeupdate', async (req, res) => {
 });
 
 // --- 3. ADD ROOT ENDPOINT ---
-// Endpoint to show the bot status and last 20 messages
+// Endpoint to show the bot status (optimized - no message collection)
 app.get('/', async (req, res) => {
   try {
-    // console.log('Root endpoint: Fetching messages from database...');
+    console.log('Root endpoint: Getting basic bot status...');
     
-    // Get all chats first
-    const chatsSnapshot = await db.collection('chats').get();
-    console.log(`Root endpoint: Found ${chatsSnapshot.size} chats`);
+    // Get basic chat count without fetching all chat data
+    const chatsSnapshot = await db.collection('chats').limit(1).get();
+    const hasChats = !chatsSnapshot.empty;
     
-    if (chatsSnapshot.empty) {
-      console.log('Root endpoint: No chats found');
-      res.json({
-        message: 'LINE Summary Bot is running!',
-        status: 'active',
-        webhook: '/webhook',
-        features: [
-          'Message storage (no echo)',
-          'AI-powered conversation summarization with /summarize command',
-          'Firebase data storage'
-        ],
-        lastMessages: [],
-        totalMessages: 0,
-        note: 'No chats found in database yet'
-      });
-      return;
-    }
-
-    // Collect messages from all chats
-    const allMessages = [];
-    
-    for (const chatDoc of chatsSnapshot.docs) {
-      const chatId = chatDoc.id;
-      // console.log(`Root endpoint: Checking chat ${chatId}`);
-      
-      const messagesSnapshot = await db.collection('chats')
-        .doc(chatId)
-        .collection('messages')
-        .limit(10) // Get up to 10 messages per chat
-        .get();
-      
-      console.log(`Root endpoint: Found ${messagesSnapshot.size} messages in chat ${chatId}`);
-      
-      messagesSnapshot.docs.forEach(doc => {
-        const data = doc.data();
-        // console.log(`Root endpoint: Message data:`, {
-        //   id: doc.id,
-        //   text: data.text,
-        //   timestamp: data.timestamp,
-        //   hasTimestamp: !!data.timestamp
-        // });
-        
-        allMessages.push({
-          id: doc.id,
-          text: data.text,
-          displayName: data.displayName,
-          groupName: data.groupName,
-          chatsType: data.chatsType,
-          timestamp: data.timestamp?.toDate?.() || null,
-          userId: data.userId,
-          chatId: chatId
-        });
-      });
+    // Get a simple count of total messages using collection group query (more efficient)
+    let totalMessageCount = 0;
+    try {
+      const messagesSnapshot = await db.collectionGroup('messages').limit(100).get();
+      totalMessageCount = messagesSnapshot.size;
+    } catch (countError) {
+      console.log('Could not get message count:', countError.message);
     }
     
-    console.log(`Root endpoint: Total messages collected: ${allMessages.length}`);
-
-    // Sort by timestamp and take last 20
-    const sortedMessages = allMessages
-      .sort((a, b) => {
-        const timeA = a.timestamp || new Date(0);
-        const timeB = b.timestamp || new Date(0);
-        return timeB - timeA; // Descending order
-      })
-      .slice(0, 20);
+    // Get basic stats without heavy data collection
+    const stats = {
+      hasChats: hasChats,
+      estimatedMessageCount: totalMessageCount >= 100 ? `${totalMessageCount}+` : totalMessageCount,
+      lastChecked: new Date().toISOString()
+    };
 
     res.json({
       message: 'LINE Summary Bot is running!',
@@ -329,19 +279,95 @@ app.get('/', async (req, res) => {
       features: [
         'Message storage (no echo)',
         'AI-powered conversation summarization with /summarize command',
-        'Firebase data storage'
+        'Firebase data storage',
+        'Rate-limited Gemini API integration'
       ],
-      lastMessages: sortedMessages,
-      totalMessages: sortedMessages.length
+      stats: stats,
+      endpoints: {
+        webhook: '/webhook',
+        code: '/code',
+        codeUpdate: '/codeupdate',
+        messages: '/messages?limit=20'
+      },
+      note: 'Root endpoint optimized for performance. Use /summarize command for conversation summaries.'
     });
   } catch (error) {
-    console.error('Error fetching messages:', error);
+    console.error('Error in root endpoint:', error);
     res.json({
       message: 'LINE Summary Bot is running!',
       status: 'active',
       webhook: '/webhook',
-      error: 'Failed to fetch messages from database',
+      error: 'Failed to get basic status',
       errorDetails: error.message
+    });
+  }
+});
+
+// --- 3.5. ADD MESSAGES ENDPOINT ---
+// Optional endpoint to get recent messages (when specifically requested)
+app.get('/messages', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 20;
+    const maxLimit = 50; // Cap at 50 messages max
+    
+    if (limit > maxLimit) {
+      return res.status(400).json({
+        error: `Limit cannot exceed ${maxLimit}`,
+        maxAllowed: maxLimit
+      });
+    }
+    
+    console.log(`Messages endpoint: Fetching up to ${limit} recent messages...`);
+    
+    // Get a few recent messages from the first available chat (simpler approach)
+    const chatsSnapshot = await db.collection('chats').limit(3).get();
+    const messages = [];
+    
+    for (const chatDoc of chatsSnapshot.docs) {
+      const messagesSnapshot = await db.collection('chats')
+        .doc(chatDoc.id)
+        .collection('messages')
+        .orderBy('timestamp', 'desc')
+        .limit(Math.ceil(limit / chatsSnapshot.size))
+        .get();
+      
+      messagesSnapshot.docs.forEach(doc => {
+        const data = doc.data();
+        messages.push({
+          id: doc.id,
+          text: data.text,
+          displayName: data.displayName,
+          groupName: data.groupName,
+          chatsType: data.chatsType,
+          timestamp: data.timestamp?.toDate?.() || null,
+          userId: data.userId,
+          chatId: data.chatsId
+        });
+      });
+      
+      if (messages.length >= limit) break;
+    }
+    
+    // Sort all messages by timestamp and take the requested limit
+    const sortedMessages = messages
+      .sort((a, b) => {
+        const timeA = a.timestamp || new Date(0);
+        const timeB = b.timestamp || new Date(0);
+        return timeB - timeA;
+      })
+      .slice(0, limit);
+    
+    res.json({
+      message: 'Recent messages retrieved',
+      totalMessages: sortedMessages.length,
+      requestedLimit: limit,
+      messages: sortedMessages
+    });
+  } catch (error) {
+    console.error('Error fetching messages:', error);
+    res.status(500).json({
+      error: 'Failed to fetch messages',
+      details: error.message
     });
   }
 });
