@@ -195,12 +195,12 @@ async function processChatsInBatches(client, event, chats, lastSummaryTimestamp,
         .join('\n');
 
       // Generate summary for this chat
-      const summaryPrompt = `Summarize the following group chat conversation. Your primary objective is to create a summary specifically for a user named Kla. It is critical to highlight all direct mentions, questions, and action items assigned to him so he doesn't miss anything important. 
-      Key Persona to Focus On:
-      Kla is mentioned using these names: @kla, @klawisesight, กล้า, or kla.
-      Required Output Structure:
-      1. General Summary: Provide a brief, 2-3 sentence paragraph outlining the main topics and overall sentiment of the conversation.
-      2. Mentions & Action Items for Kla: Create a dedicated, bulleted list for every instance where Kla was mentioned. For each bullet point, clearly state: The context of the mention. Who made the mention. Any direct questions or action items for Kla. Chat Conversation to Summarize: "${chatName}":\n\n${conversationText}\n\nSummary:`;
+      const summaryPrompt = `Summarize the key points and action items from the following group chat conversation, focusing exclusively on anything relevant to the user Kla.
+Kla is mentioned using these names: @kla, @klawisesight, กล้า, or kla.
+Instructions:
+If and only if Kla or any of his aliases are mentioned, provide a brief, bulleted list of the key points, questions, or action items directed at him.
+If he is not mentioned at all, respond with only the single phrase: No new mentions.
+Do not add any headlines, introductory sentences, or general summaries. Chat Conversation to Summarize: "${chatName}":\n\n${conversationText}\n\nSummary:`;
       const summary = await generateContentWithRetry(summaryPrompt);
 
       summaries.push(`📝 **${chatType} : ${chatName}**\n${summary}`);
