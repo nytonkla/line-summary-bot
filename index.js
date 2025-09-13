@@ -128,6 +128,197 @@ async function generateContentWithRetry(prompt, maxRetries = 3) {
   }
 }
 
+// Function to process chats in batches and send multiple reply messages
+async function processChatsInBatches(client, event, chats, lastSummaryTimestamp, batchSize = 5) {
+  const totalChats = chats.length;
+  console.log(`Processing ${totalChats} chats in batches of ${batchSize}`);
+  
+  // Process chats in batches
+  for (let i = 0; i < totalChats; i += batchSize) {
+    const batch = chats.slice(i, i + batchSize);
+    const batchNumber = Math.floor(i / batchSize) + 1;
+    const totalBatches = Math.ceil(totalChats / batchSize);
+    
+    console.log(`Processing batch ${batchNumber}/${totalBatches} with ${batch.length} chats`);
+    
+    const summaries = [];
+    
+    // Process each chat in the current batch
+    for (const chatDoc of batch) {
+      const chatId = chatDoc.id;
+      
+      // Get messages from this chat
+      const limit = lastSummaryTimestamp ? 100 : 30;
+      const messagesSnapshot = await db.collection('chats')
+        .doc(chatId)
+        .collection('messages')
+        .orderBy('timestamp', 'desc')
+        .limit(limit)
+        .get();
+
+      console.log(`Found ${messagesSnapshot.size} messages in chat ${chatId}`);
+      if (messagesSnapshot.empty) continue;
+
+      // Convert to array and reverse to get chronological order
+      let messages = messagesSnapshot.docs
+        .map(doc => doc.data())
+        .reverse()
+        .filter(msg => msg.text && msg.text.toLowerCase() !== '/summarize');
+
+      // Filter messages based on last summary timestamp
+      if (lastSummaryTimestamp) {
+        messages = messages.filter(msg => {
+          if (!msg.timestamp) return false;
+          return msg.timestamp.toDate() > lastSummaryTimestamp.toDate();
+        });
+        console.log(`After filtering by timestamp: ${messages.length} messages remain in chat ${chatId}`);
+      } else {
+        messages = messages.slice(-30);
+        console.log(`No previous summary found, taking last 30 messages: ${messages.length} messages in chat ${chatId}`);
+      }
+
+      if (messages.length === 0) continue;
+
+      // Get chat info
+      const firstMessage = messages[0];
+      const chatName = firstMessage.chatsType === 'group' 
+        ? (firstMessage.groupName || 'Unknown Group')
+        : (firstMessage.displayName || 'Direct Chat');
+
+      console.log(`Generating summary for chat: ${chatName}`);
+
+      // Create conversation text for this chat
+      const conversationText = messages
+        .map(msg => `${msg.displayName || 'User'}: ${msg.text}`)
+        .join('\n');
+
+      // Generate summary for this chat
+      const summaryPrompt = `Please provide a concise summary of the following conversation from "${chatName}":\n\n${conversationText}\n\nSummary:`;
+      const summary = await generateContentWithRetry(summaryPrompt);
+
+      summaries.push(`📝 **${chatName}**\n${summary}\n`);
+    }
+    
+    // Send batch summary if there are summaries
+    if (summaries.length > 0) {
+      const batchTitle = totalBatches > 1 ? ` (Batch ${batchNumber}/${totalBatches})` : '';
+      const combinedSummary = summaries.join('\n---\n\n');
+      
+      // Split the summary into multiple messages if it's too long
+      const summaryMessages = splitIntoMessages(`📋 **Conversation Summaries${batchTitle}**\n\n${combinedSummary}`);
+      
+      // Create an array of message objects
+      const messages = summaryMessages.map(text => ({
+        type: 'text',
+        text: text
+      }));
+      
+      // Send the batch
+      await client.replyMessage(event.replyToken, messages);
+      
+      // Add a small delay between batches to respect rate limits
+      if (i + batchSize < totalChats) {
+        console.log(`Waiting 3 seconds before processing next batch...`);
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      }
+    }
+  }
+  
+  console.log(`Completed processing all ${totalChats} chats`);
+}
+
+// Function to process collection group chats in batches
+async function processCollectionGroupChatsInBatches(client, event, chatEntries, lastSummaryTimestamp, batchSize = 5) {
+  const totalChats = chatEntries.length;
+  console.log(`Processing ${totalChats} collection group chats in batches of ${batchSize}`);
+  
+  // Process chats in batches
+  for (let i = 0; i < totalChats; i += batchSize) {
+    const batch = chatEntries.slice(i, i + batchSize);
+    const batchNumber = Math.floor(i / batchSize) + 1;
+    const totalBatches = Math.ceil(totalChats / batchSize);
+    
+    console.log(`Processing collection group batch ${batchNumber}/${totalBatches} with ${batch.length} chats`);
+    
+    const summaries = [];
+    
+    // Process each chat in the current batch
+    for (const [chatId, messages] of batch) {
+      console.log(`Processing chat ${chatId} with ${messages.length} messages`);
+      
+      // Filter messages based on last summary timestamp
+      let filteredMessages = messages.filter(msg => msg.text && msg.text.toLowerCase() !== '/summarize');
+      
+      if (lastSummaryTimestamp) {
+        // Filter messages after the last summary timestamp
+        filteredMessages = filteredMessages.filter(msg => {
+          if (!msg.timestamp) return false;
+          return msg.timestamp.toDate() > lastSummaryTimestamp.toDate();
+        });
+        console.log(`After filtering by timestamp: ${filteredMessages.length} messages remain`);
+      } else {
+        // If no previous summary, take last 30 messages
+        filteredMessages = filteredMessages
+          .sort((a, b) => {
+            const timeA = a.timestamp?.toDate?.() || new Date(0);
+            const timeB = b.timestamp?.toDate?.() || new Date(0);
+            return timeA - timeB;
+          })
+          .slice(-30);
+        console.log(`No previous summary found, taking last 30 messages: ${filteredMessages.length} messages`);
+      }
+      
+      if (filteredMessages.length === 0) {
+        console.log('No messages after filtering, skipping this chat');
+        continue;
+      }
+      
+      const firstMessage = filteredMessages[0];
+      const chatName = firstMessage.chatsType === 'group' 
+        ? (firstMessage.groupName || 'Unknown Group')
+        : (firstMessage.displayName || 'Direct Chat');
+      
+      console.log(`Generating summary for ${chatName}...`);
+      
+      const conversationText = filteredMessages
+        .map(msg => `${msg.displayName || 'User'}: ${msg.text}`)
+        .join('\n');
+      
+      const summaryPrompt = `Please provide a concise summary of the following conversation from "${chatName}":\n\n${conversationText}\n\nSummary:`;
+      const summary = await generateContentWithRetry(summaryPrompt);
+      console.log(`Summary generated for ${chatName}: ${summary.substring(0, 100)}...`);
+      
+      summaries.push(`📝 **${chatName}**\n${summary}\n`);
+    }
+    
+    // Send batch summary if there are summaries
+    if (summaries.length > 0) {
+      const batchTitle = totalBatches > 1 ? ` (Batch ${batchNumber}/${totalBatches})` : '';
+      const combinedSummary = summaries.join('\n---\n\n');
+      
+      // Split the summary into multiple messages if it's too long
+      const summaryMessages = splitIntoMessages(`📋 **Conversation Summaries${batchTitle}**\n\n${combinedSummary}`);
+      
+      // Create an array of message objects
+      const messages = summaryMessages.map(text => ({
+        type: 'text',
+        text: text
+      }));
+      
+      // Send the batch
+      await client.replyMessage(event.replyToken, messages);
+      
+      // Add a small delay between batches to respect rate limits
+      if (i + batchSize < totalChats) {
+        console.log(`Waiting 3 seconds before processing next batch...`);
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      }
+    }
+  }
+  
+  console.log(`Completed processing all ${totalChats} collection group chats`);
+}
+
 // Function to get the last summary timestamp from commands collection
 async function getLastSummaryTimestamp() {
   try {
@@ -490,174 +681,28 @@ async function handleEvent(event) {
               return client.replyMessage(event.replyToken, reply);
             }
             
-            // Process the grouped messages (limit to avoid API overload)
-            const summaries = [];
-            const maxChatsToProcess = 5;
-            const chatEntries = Object.entries(chatGroups).slice(0, maxChatsToProcess);
+            // Process all chats in batches using the collection group approach
+            const batchSize = 5;
+            const chatEntries = Object.entries(chatGroups);
+            console.log(`Processing ${chatEntries.length} chats from collection group in batches of ${batchSize}`);
             
-            console.log(`Processing ${chatEntries.length} out of ${Object.keys(chatGroups).length} chats (limited to ${maxChatsToProcess})`);
-            
-            for (const [chatId, messages] of chatEntries) {
-              console.log(`Processing chat ${chatId} with ${messages.length} messages`);
-              
-              // Filter messages based on last summary timestamp
-              let filteredMessages = messages.filter(msg => msg.text && msg.text.toLowerCase() !== '/summarize');
-              
-              if (lastSummaryTimestamp) {
-                // Filter messages after the last summary timestamp
-                filteredMessages = filteredMessages.filter(msg => {
-                  if (!msg.timestamp) return false;
-                  return msg.timestamp.toDate() > lastSummaryTimestamp.toDate();
-                });
-                console.log(`After filtering by timestamp: ${filteredMessages.length} messages remain`);
-              } else {
-                // If no previous summary, take last 30 messages
-                filteredMessages = filteredMessages
-                  .sort((a, b) => {
-                    const timeA = a.timestamp?.toDate?.() || new Date(0);
-                    const timeB = b.timestamp?.toDate?.() || new Date(0);
-                    return timeA - timeB;
-                  })
-                  .slice(-30);
-                console.log(`No previous summary found, taking last 30 messages: ${filteredMessages.length} messages`);
-              }
-              
-              const sortedMessages = filteredMessages;
-              
-              console.log(`After filtering: ${sortedMessages.length} messages remain`);
-              if (sortedMessages.length === 0) {
-                console.log('No messages after filtering, skipping this chat');
-                continue;
-              }
-              
-              const firstMessage = sortedMessages[0];
-              const chatName = firstMessage.chatsType === 'group' 
-                ? (firstMessage.groupName || 'Unknown Group')
-                : (firstMessage.displayName || 'Direct Chat');
-              
-              const conversationText = sortedMessages
-                .map(msg => `${msg.displayName || 'User'}: ${msg.text}`)
-                .join('\n');
-              
-              const summaryPrompt = `Please provide a concise summary of the following conversation from "${chatName}":\n\n${conversationText}\n\nSummary:`;
-              console.log(`Generating summary for ${chatName}...`);
-              const summary = await generateContentWithRetry(summaryPrompt);
-              console.log(`Summary generated for ${chatName}: ${summary.substring(0, 100)}...`);
-              
-              summaries.push(`📝 **${chatName}**\n${summary}\n`);
-            }
-            
-            console.log(`Generated ${summaries.length} summaries`);
-            if (summaries.length === 0) {
-              console.log('No summaries generated, sending no updates message');
-              const reply = { type: 'text', text: 'No more updates' };
-              return client.replyMessage(event.replyToken, reply);
-            }
-            
-            const combinedSummary = summaries.join('\n---\n\n');
-            console.log('Sending combined summary to user');
-            
-            // Split the summary into multiple messages if it's too long
-            const summaryMessages = splitIntoMessages(`📋 **Conversation Summaries**\n\n${combinedSummary}`);
-            
-            // Create an array of message objects
-            const messages = summaryMessages.map(text => ({
-              type: 'text',
-              text: text
+            // Convert chat entries to a format compatible with batch processing
+            const chatDocs = chatEntries.map(([chatId, messages]) => ({
+              id: chatId,
+              data: () => ({ chatsId: chatId })
             }));
             
-            return client.replyMessage(event.replyToken, messages);
+            // Create a custom batch processing function for collection group data
+            await processCollectionGroupChatsInBatches(client, event, chatEntries, lastSummaryTimestamp, batchSize);
           }
         }
 
-        const summaries = [];
+        // Process all chats in batches to ensure all chats are summarized
+        const batchSize = 5; // Process 5 chats per batch
+        console.log(`Processing ${allChatsSnapshot.docs.length} chats in batches of ${batchSize}`);
         
-        // Limit the number of chats to process to avoid overwhelming the API
-        const maxChatsToProcess = 5; // Process maximum 5 chats at once
-        const chatsToProcess = allChatsSnapshot.docs.slice(0, maxChatsToProcess);
-        
-        console.log(`Processing ${chatsToProcess.length} out of ${allChatsSnapshot.docs.length} chats (limited to ${maxChatsToProcess})`);
-        
-        // Process each chat
-        for (const chatDoc of chatsToProcess) {
-          const chatId = chatDoc.id;
-          //console.log(`Processing chat: ${chatId}`);
-          
-          // Get messages from this chat (limit based on whether we have a timestamp filter)
-          const limit = lastSummaryTimestamp ? 100 : 30; // Get more messages if filtering by timestamp
-          const messagesSnapshot = await db.collection('chats')
-            .doc(chatId)
-            .collection('messages')
-            .orderBy('timestamp', 'desc')
-            .limit(limit)
-            .get();
-
-          console.log(`Found ${messagesSnapshot.size} messages in chat ${chatId}`);
-          if (messagesSnapshot.empty) continue;
-
-          // Convert to array and reverse to get chronological order
-          let messages = messagesSnapshot.docs
-            .map(doc => doc.data())
-            .reverse()
-            .filter(msg => msg.text && msg.text.toLowerCase() !== '/summarize'); // Exclude the command itself
-
-          // Filter messages based on last summary timestamp
-          if (lastSummaryTimestamp) {
-            // Filter messages after the last summary timestamp
-            messages = messages.filter(msg => {
-              if (!msg.timestamp) return false;
-              return msg.timestamp.toDate() > lastSummaryTimestamp.toDate();
-            });
-            console.log(`After filtering by timestamp: ${messages.length} messages remain in chat ${chatId}`);
-          } else {
-            // If no previous summary, take last 30 messages
-            messages = messages.slice(-30);
-            console.log(`No previous summary found, taking last 30 messages: ${messages.length} messages in chat ${chatId}`);
-          }
-
-          //console.log(`After filtering, ${messages.length} messages remain in chat ${chatId}`);
-          if (messages.length === 0) continue;
-
-          // Get chat info (group name or user info)
-          const firstMessage = messages[0];
-          const chatName = firstMessage.chatsType === 'group' 
-            ? (firstMessage.groupName || 'Unknown Group')
-            : (firstMessage.displayName || 'Direct Chat');
-
-          console.log(`Generating summary for chat: ${chatName}`);
-
-          // Create conversation text for this chat
-          const conversationText = messages
-            .map(msg => `${msg.displayName || 'User'}: ${msg.text}`)
-            .join('\n');
-
-          // Generate summary for this chat
-          const summaryPrompt = `Please provide a concise summary of the following conversation from "${chatName}":\n\n${conversationText}\n\nSummary:`;
-          const summary = await generateContentWithRetry(summaryPrompt);
-
-          summaries.push(`📝 **${chatName}**\n${summary}\n`);
-        }
-
-        console.log(`Generated ${summaries.length} summaries`);
-        if (summaries.length === 0) {
-          const reply = { type: 'text', text: 'No more updates' };
-          return client.replyMessage(event.replyToken, reply);
-        }
-
-        // Combine all summaries
-        const combinedSummary = summaries.join('\n---\n\n');
-        console.log('Sending combined summary to user');
-        
-        // Split the summary into multiple messages if it's too long
-        const summaryMessages = splitIntoMessages(`📋 **Conversation Summaries**\n\n${combinedSummary}`);
-        
-        // Create an array of message objects
-        const messages = summaryMessages.map(text => ({
-          type: 'text',
-          text: text
-        }));
-        
-        return client.replyMessage(event.replyToken, messages);
+        // Use the new batch processing function
+        await processChatsInBatches(client, event, allChatsSnapshot.docs, lastSummaryTimestamp, batchSize);
 
       } catch (summaryError) {
         console.error('Error generating summary:', summaryError);
