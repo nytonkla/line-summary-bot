@@ -84,7 +84,8 @@ class RateLimiter {
 }
 
 // Create a global rate limiter for Gemini API calls
-const geminiRateLimiter = new RateLimiter(1, 2000); // Max 1 request per 2 seconds
+// Gemini 2.0 Flash has 15 RPM limit, so we'll use 14 requests per minute to be safe
+const geminiRateLimiter = new RateLimiter(14, 60000); // Max 14 requests per 60 seconds (1 minute)
 
 // Enhanced function to generate content with retry logic and rate limiting
 async function generateContentWithRetry(prompt, maxRetries = 3) {
@@ -129,7 +130,7 @@ async function generateContentWithRetry(prompt, maxRetries = 3) {
 }
 
 // Function to process chats in batches and send multiple reply messages
-async function processChatsInBatches(client, event, chats, lastSummaryTimestamp, batchSize = 5) {
+async function processChatsInBatches(client, event, chats, lastSummaryTimestamp, batchSize = 15) {
   const totalChats = chats.length;
   console.log(`Processing ${totalChats} chats in batches of ${batchSize}`);
   
@@ -222,10 +223,10 @@ async function processChatsInBatches(client, event, chats, lastSummaryTimestamp,
         await client.pushMessage(targetId, messages);
       }
       
-      // Add a small delay between batches to respect rate limits
+      // Add a 1-minute delay between batches to respect RPM limits
       if (i + batchSize < totalChats) {
-        console.log(`Waiting 3 seconds before processing next batch...`);
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        console.log(`Waiting 1 minute (60 seconds) before processing next batch to respect RPM limits...`);
+        await new Promise(resolve => setTimeout(resolve, 60000)); // 60 seconds = 1 minute
       }
     }
   }
@@ -234,7 +235,7 @@ async function processChatsInBatches(client, event, chats, lastSummaryTimestamp,
 }
 
 // Function to process collection group chats in batches
-async function processCollectionGroupChatsInBatches(client, event, chatEntries, lastSummaryTimestamp, batchSize = 5) {
+async function processCollectionGroupChatsInBatches(client, event, chatEntries, lastSummaryTimestamp, batchSize = 15) {
   const totalChats = chatEntries.length;
   console.log(`Processing ${totalChats} collection group chats in batches of ${batchSize}`);
   
@@ -320,10 +321,10 @@ async function processCollectionGroupChatsInBatches(client, event, chatEntries, 
         await client.pushMessage(targetId, messages);
       }
       
-      // Add a small delay between batches to respect rate limits
+      // Add a 1-minute delay between batches to respect RPM limits
       if (i + batchSize < totalChats) {
-        console.log(`Waiting 3 seconds before processing next batch...`);
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        console.log(`Waiting 1 minute (60 seconds) before processing next batch to respect RPM limits...`);
+        await new Promise(resolve => setTimeout(resolve, 60000)); // 60 seconds = 1 minute
       }
     }
   }
@@ -694,7 +695,7 @@ async function handleEvent(event) {
             }
             
             // Process all chats in batches using the collection group approach
-            const batchSize = 5;
+            const batchSize = 15; // Process 15 chats per batch (matches Gemini RPM limit)
             const chatEntries = Object.entries(chatGroups);
             console.log(`Processing ${chatEntries.length} chats from collection group in batches of ${batchSize}`);
             
@@ -710,7 +711,7 @@ async function handleEvent(event) {
         }
 
         // Process all chats in batches to ensure all chats are summarized
-        const batchSize = 5; // Process 5 chats per batch
+        const batchSize = 15; // Process 15 chats per batch (matches Gemini RPM limit)
         console.log(`Processing ${allChatsSnapshot.docs.length} chats in batches of ${batchSize}`);
         
         // Use the new batch processing function
