@@ -182,11 +182,12 @@ async function processChatsInBatches(client, event, chats, lastSummaryTimestamp,
 
       // Get chat info
       const firstMessage = messages[0];
-      const chatName = firstMessage.chatsType === 'group' 
+      const chatType = firstMessage.chatsType;
+      const chatName = chatType === 'group' 
         ? (firstMessage.groupName || 'Unknown Group')
         : (firstMessage.displayName || 'Direct Chat');
 
-      console.log(`Generating summary for chat: ${chatName}`);
+      console.log(`Generating summary for ${chatType}: ${chatName}`);
 
       // Create conversation text for this chat
       const conversationText = messages
@@ -194,16 +195,21 @@ async function processChatsInBatches(client, event, chats, lastSummaryTimestamp,
         .join('\n');
 
       // Generate summary for this chat
-      const summaryPrompt = `Please provide a concise summary of the following conversation from "${chatName}":\n\n${conversationText}\n\nSummary:`;
+      const summaryPrompt = `Summarize the following group chat conversation. Your primary objective is to create a summary specifically for a user named Kla. It is critical to highlight all direct mentions, questions, and action items assigned to him so he doesn't miss anything important. 
+      Key Persona to Focus On:
+      Kla is mentioned using these names: @kla, @klawisesight, กล้า, or kla.
+      Required Output Structure:
+      1. General Summary: Provide a brief, 2-3 sentence paragraph outlining the main topics and overall sentiment of the conversation.
+      2. Mentions & Action Items for Kla: Create a dedicated, bulleted list for every instance where Kla was mentioned. For each bullet point, clearly state: The context of the mention. Who made the mention. Any direct questions or action items for Kla. Chat Conversation to Summarize: "${chatName}":\n\n${conversationText}\n\nSummary:`;
       const summary = await generateContentWithRetry(summaryPrompt);
 
-      summaries.push(`📝 **${chatName}**\n${summary}\n`);
+      summaries.push(`📝 **${chatType} : ${chatName}**\n${summary}`);
     }
     
     // Send batch summary if there are summaries
     if (summaries.length > 0) {
       const batchTitle = totalBatches > 1 ? ` (Batch ${batchNumber}/${totalBatches})` : '';
-      const combinedSummary = summaries.join('\n---\n\n');
+      const combinedSummary = summaries.join('\n----\n');
       
       // Split the summary into multiple messages if it's too long
       const summaryMessages = splitIntoMessages(`📋 **Conversation Summaries${batchTitle}**\n\n${combinedSummary}`);
@@ -281,11 +287,12 @@ async function processCollectionGroupChatsInBatches(client, event, chatEntries, 
       }
       
       const firstMessage = filteredMessages[0];
-      const chatName = firstMessage.chatsType === 'group' 
+      const chatType = firstMessage.chatsType;
+      const chatName = chatType === 'group' 
         ? (firstMessage.groupName || 'Unknown Group')
         : (firstMessage.displayName || 'Direct Chat');
       
-      console.log(`Generating summary for ${chatName}...`);
+      console.log(`Generating summary for ${chatType}: ${chatName}...`);
       
       const conversationText = filteredMessages
         .map(msg => `${msg.displayName || 'User'}: ${msg.text}`)
@@ -298,9 +305,9 @@ async function processCollectionGroupChatsInBatches(client, event, chatEntries, 
       1. General Summary: Provide a brief, 2-3 sentence paragraph outlining the main topics and overall sentiment of the conversation.
       2. Mentions & Action Items for Kla: Create a dedicated, bulleted list for every instance where Kla was mentioned. For each bullet point, clearly state: The context of the mention. Who made the mention. Any direct questions or action items for Kla. Chat Conversation to Summarize: "${chatName}":\n\n${conversationText}\n\nSummary:`;
       const summary = await generateContentWithRetry(summaryPrompt);
-      console.log(`Summary generated for ${chatName}: ${summary.substring(0, 100)}...`);
+      console.log(`Summary generated for ${chatType}: ${chatName}: ${summary.substring(0, 100)}...`);
       
-      summaries.push(`📝 **${chatName}**\n${summary}\n`);
+      summaries.push(`📝 **${chatType} : ${chatName}**\n${summary}\n`);
     }
     
     // Send batch summary if there are summaries
