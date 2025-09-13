@@ -213,8 +213,14 @@ async function processChatsInBatches(client, event, chats, lastSummaryTimestamp,
         text: text
       }));
       
-      // Send the batch
-      await client.replyMessage(event.replyToken, messages);
+      // Send the batch - use reply for first batch, push for subsequent batches
+      if (batchNumber === 1) {
+        await client.replyMessage(event.replyToken, messages);
+      } else {
+        // For subsequent batches, use push message to the user/group
+        const targetId = event.source.groupId || event.source.userId;
+        await client.pushMessage(targetId, messages);
+      }
       
       // Add a small delay between batches to respect rate limits
       if (i + batchSize < totalChats) {
@@ -305,8 +311,14 @@ async function processCollectionGroupChatsInBatches(client, event, chatEntries, 
         text: text
       }));
       
-      // Send the batch
-      await client.replyMessage(event.replyToken, messages);
+      // Send the batch - use reply for first batch, push for subsequent batches
+      if (batchNumber === 1) {
+        await client.replyMessage(event.replyToken, messages);
+      } else {
+        // For subsequent batches, use push message to the user/group
+        const targetId = event.source.groupId || event.source.userId;
+        await client.pushMessage(targetId, messages);
+      }
       
       // Add a small delay between batches to respect rate limits
       if (i + batchSize < totalChats) {
