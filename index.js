@@ -195,12 +195,10 @@ async function processChatsInBatches(client, event, chats, lastSummaryTimestamp,
         .join('\n');
 
       // Generate summary for this chat
-      const summaryPrompt = `Summarize the key points and action items from the following group chat conversation, focusing exclusively on anything relevant to the user Kla.
-Kla is mentioned using these names: @kla, @klawisesight, กล้า, or kla.
-Instructions:
+      const summaryPrompt = `Summarize the key points and action items from the following group chat conversation, with additional focusing exclusively on anything relevant to the user Kla.
 If and only if Kla or any of his aliases are mentioned, provide a brief, bulleted list of the key points, questions, or action items directed at him.
-If he is not mentioned at all, respond with only the single phrase: No new mentions.
-Do not add any headlines, introductory sentences, or general summaries. Chat Conversation to Summarize: "${chatName}":\n\n${conversationText}\n\nSummary:`;
+Kla is mentioned using these names: @kla, @klawisesight, กล้า, or kla.
+Do not add any headlines, introductory sentences. Chat Conversation to Summarize: "${chatName}":\n\n${conversationText}\n\nSummary:`;
       const summary = await generateContentWithRetry(summaryPrompt);
 
       summaries.push(`📝 **${chatType} : ${chatName}**\n${summary}`);
