@@ -70,3 +70,9 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# Firebase
+.firebase/
+functions/node_modules/
+functions/lib/
+functions/serviceAccountKey.json
