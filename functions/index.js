@@ -16,7 +16,7 @@ const db = admin.firestore();
 console.log('Firestore database connection established');
 
 // Initialize Google AI (Gemini)
-const genAI = new GoogleGenerativeAI(functions.config().gemini.api_key);
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
 // Global variable to store Google Sheets data
@@ -361,7 +361,7 @@ async function fetchGoogleSheetsData() {
     console.log('Fetching data from Google Sheets...');
     
     // Extract spreadsheet ID from the URL
-    const url = functions.config().sheets.kla_download_code_url;
+    const url = process.env.KLA_DOWNLOAD_CODE_URL;
     const spreadsheetId = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/)?.[1];
     
     if (!spreadsheetId) {
@@ -371,7 +371,7 @@ async function fetchGoogleSheetsData() {
     console.log('Spreadsheet ID:', spreadsheetId);
     
     // Initialize Google Sheets API (using API key for public sheets)
-    const sheets = google.sheets({ version: 'v4', auth: functions.config().google.api_key });
+    const sheets = google.sheets({ version: 'v4', auth: process.env.GOOGLE_API_KEY });
     
     // Fetch data from the sheet
     const response = await sheets.spreadsheets.values.get({
@@ -402,10 +402,10 @@ async function fetchGoogleSheetsData() {
 }
 
 // --- 1. SET UP YOUR CONFIGURATION ---
-// Get your Channel Access Token and Channel Secret from Firebase Functions config
+// Get your Channel Access Token and Channel Secret from environment variables
 const config = {
-  channelAccessToken: functions.config().line.channel_access_token,
-  channelSecret: functions.config().line.channel_secret,
+  channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
+  channelSecret: process.env.CHANNEL_SECRET,
 };
 
 // Create a new LINE SDK client

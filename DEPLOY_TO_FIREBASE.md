@@ -17,25 +17,32 @@ firebase login
 firebase init
 ```
 
-## Setup Firebase Configuration
+## Setup Environment Variables
 
-Set the required environment variables using Firebase Functions config:
+Create a `.env` file in the `functions/` directory with your environment variables:
 
 ```bash
+# Copy the example file
+cp functions/.env.example functions/.env
+
+# Edit the .env file with your actual values
+```
+
+The `.env` file should contain:
+```bash
 # LINE Bot Configuration
-firebase functions:config:set line.channel_access_token="YOUR_LINE_CHANNEL_ACCESS_TOKEN"
-firebase functions:config:set line.channel_secret="YOUR_LINE_CHANNEL_SECRET"
+CHANNEL_ACCESS_TOKEN=your_line_channel_access_token_here
+CHANNEL_SECRET=your_line_channel_secret_here
 
 # Gemini AI Configuration
-firebase functions:config:set gemini.api_key="YOUR_GEMINI_API_KEY"
+GEMINI_API_KEY=your_gemini_api_key_here
 
 # Google Sheets Configuration
-firebase functions:config:set sheets.kla_download_code_url="YOUR_GOOGLE_SHEETS_URL"
-firebase functions:config:set google.api_key="YOUR_GOOGLE_API_KEY"
+KLA_DOWNLOAD_CODE_URL=your_google_sheets_url_here
+GOOGLE_API_KEY=your_google_api_key_here
 
-# Firebase Configuration
-firebase functions:config:set firebase.database_url="YOUR_FIREBASE_DATABASE_URL"
-firebase functions:config:set firebase.project_id="YOUR_FIREBASE_PROJECT_ID"
+# Firebase Configuration (optional - usually auto-detected)
+FIREBASE_DATABASE_URL=your_firebase_database_url_here
 ```
 
 ## Deploy to Firebase
@@ -73,17 +80,16 @@ The function will be available at:
 http://localhost:5001/YOUR_PROJECT_ID/us-central1/lineSummaryBot
 ```
 
-## Environment Variables Migration
+## Environment Variables
 
-The following environment variables have been migrated to Firebase Functions config:
+The bot uses the same environment variable names as before:
 
-- `CHANNEL_ACCESS_TOKEN` → `line.channel_access_token`
-- `CHANNEL_SECRET` → `line.channel_secret`
-- `GEMINI_API_KEY` → `gemini.api_key`
-- `KLA_DOWNLOAD_CODE_URL` → `sheets.kla_download_code_url`
-- `GOOGLE_API_KEY` → `google.api_key`
-- `FIREBASE_DATABASE_URL` → `firebase.database_url`
-- `FIREBASE_PROJECT_ID` → `firebase.project_id`
+- `CHANNEL_ACCESS_TOKEN` - LINE Bot Channel Access Token
+- `CHANNEL_SECRET` - LINE Bot Channel Secret
+- `GEMINI_API_KEY` - Google Gemini API Key
+- `KLA_DOWNLOAD_CODE_URL` - Google Sheets URL
+- `GOOGLE_API_KEY` - Google API Key
+- `FIREBASE_DATABASE_URL` - Firebase Database URL (optional)
 
 ## Benefits of Firebase Functions
 
