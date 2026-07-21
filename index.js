@@ -31,12 +31,28 @@ let cachedSheetsData = [];
 
 // Function to split long text into multiple messages (LINE has 5000 char limit per message)
 function splitIntoMessages(text, maxLength = 4000) {
+  if (!text) return [];
   const messages = [];
   const lines = text.split('\n');
   let currentMessage = '';
   
-  for (const line of lines) {
-    // If adding this line would exceed the limit, start a new message
+  for (let line of lines) {
+    // If an individual line exceeds maxLength, chunk it into smaller parts
+    while (line.length > maxLength) {
+      let breakIndex = line.lastIndexOf(' ', maxLength);
+      if (breakIndex <= 0) breakIndex = maxLength;
+      
+      const part = line.substring(0, breakIndex);
+      line = line.substring(breakIndex).trimStart();
+      
+      if (currentMessage.length + part.length + 1 > maxLength && currentMessage.length > 0) {
+        messages.push(currentMessage.trim());
+        currentMessage = part;
+      } else {
+        currentMessage += (currentMessage.length > 0 ? '\n' : '') + part;
+      }
+    }
+
     if (currentMessage.length + line.length + 1 > maxLength && currentMessage.length > 0) {
       messages.push(currentMessage.trim());
       currentMessage = line;
@@ -45,12 +61,42 @@ function splitIntoMessages(text, maxLength = 4000) {
     }
   }
   
-  // Add the last message if it has content
   if (currentMessage.trim().length > 0) {
     messages.push(currentMessage.trim());
   }
   
   return messages;
+}
+
+// Function to safely send text messages to LINE in batches of max 5 message objects (LINE API limit)
+async function sendLineMessages(client, replyToken, targetId, textArray) {
+  if (!textArray || textArray.length === 0) return;
+  
+  const messageObjects = textArray.map(text => ({
+    type: 'text',
+    text: text
+  }));
+  
+  const batchSize = 5; // LINE API allows at most 5 message objects per request
+  let replyTokenUsed = false;
+  
+  for (let i = 0; i < messageObjects.length; i += batchSize) {
+    const chunk = messageObjects.slice(i, i + batchSize);
+    
+    if (!replyTokenUsed && replyToken) {
+      try {
+        await client.replyMessage(replyToken, chunk);
+        replyTokenUsed = true;
+      } catch (replyError) {
+        console.error('Error replying to LINE (falling back to pushMessage):', replyError.message);
+        if (targetId) {
+          await client.pushMessage(targetId, chunk);
+        }
+      }
+    } else if (targetId) {
+      await client.pushMessage(targetId, chunk);
+    }
+  }
 }
 
 // Rate limiting utility
@@ -189,10 +235,19 @@ async function processChatsInBatches(client, event, chats, lastSummaryTimestamp,
 
       console.log(`Generating summary for ${chatType}: ${chatName}`);
 
-      // Create conversation text for this chat
-      const conversationText = messages
-        .map(msg => `${msg.displayName || 'User'}: ${msg.text}`)
+      // Create conversation text for this chat with safe message length limits
+      let conversationText = messages
+        .map(msg => {
+          const text = msg.text || '';
+          const safeText = text.length > 2000 ? text.substring(0, 2000) + '... (truncated)' : text;
+          return `${msg.displayName || 'User'}: ${safeText}`;
+        })
         .join('\n');
+
+      if (conversationText.length > 30000) {
+        console.log(`Conversation text too long (${conversationText.length} chars), truncating to last 30000 chars`);
+        conversationText = '... (earlier messages truncated)\n' + conversationText.substring(conversationText.length - 30000);
+      }
 
       // Generate summary for this chat
       const summaryPrompt = `Summarize the key points and action items from the following group chat conversation, with additional focusing exclusively on anything relevant to the user Kla.
@@ -212,20 +267,9 @@ Do not add any headlines, introductory sentences. Chat Conversation to Summarize
       // Split the summary into multiple messages if it's too long
       const summaryMessages = splitIntoMessages(`📋 **Conversation Summaries${batchTitle}**\n\n${combinedSummary}`);
       
-      // Create an array of message objects
-      const messages = summaryMessages.map(text => ({
-        type: 'text',
-        text: text
-      }));
-      
-      // Send the batch - use reply for first batch, push for subsequent batches
-      if (batchNumber === 1) {
-        await client.replyMessage(event.replyToken, messages);
-      } else {
-        // For subsequent batches, use push message to the user/group
-        const targetId = event.source.groupId || event.source.userId;
-        await client.pushMessage(targetId, messages);
-      }
+      const targetId = event.source.groupId || event.source.userId;
+      const replyToken = batchNumber === 1 ? event.replyToken : null;
+      await sendLineMessages(client, replyToken, targetId, summaryMessages);
       
       // Add a 1-minute delay between batches to respect RPM limits
       if (i + batchSize < totalChats) {
@@ -292,9 +336,18 @@ async function processCollectionGroupChatsInBatches(client, event, chatEntries, 
       
       console.log(`Generating summary for ${chatType}: ${chatName}...`);
       
-      const conversationText = filteredMessages
-        .map(msg => `${msg.displayName || 'User'}: ${msg.text}`)
+      let conversationText = filteredMessages
+        .map(msg => {
+          const text = msg.text || '';
+          const safeText = text.length > 2000 ? text.substring(0, 2000) + '... (truncated)' : text;
+          return `${msg.displayName || 'User'}: ${safeText}`;
+        })
         .join('\n');
+      
+      if (conversationText.length > 30000) {
+        console.log(`Conversation text too long (${conversationText.length} chars), truncating to last 30000 chars`);
+        conversationText = '... (earlier messages truncated)\n' + conversationText.substring(conversationText.length - 30000);
+      }
       
       const summaryPrompt = `Summarize the following group chat conversation. Your primary objective is to create a summary specifically for a user named Kla. It is critical to highlight all direct mentions, questions, and action items assigned to him so he doesn't miss anything important. 
       Key Persona to Focus On:
@@ -316,20 +369,9 @@ async function processCollectionGroupChatsInBatches(client, event, chatEntries, 
       // Split the summary into multiple messages if it's too long
       const summaryMessages = splitIntoMessages(`📋 **Conversation Summaries${batchTitle}**\n\n${combinedSummary}`);
       
-      // Create an array of message objects
-      const messages = summaryMessages.map(text => ({
-        type: 'text',
-        text: text
-      }));
-      
-      // Send the batch - use reply for first batch, push for subsequent batches
-      if (batchNumber === 1) {
-        await client.replyMessage(event.replyToken, messages);
-      } else {
-        // For subsequent batches, use push message to the user/group
-        const targetId = event.source.groupId || event.source.userId;
-        await client.pushMessage(targetId, messages);
-      }
+      const targetId = event.source.groupId || event.source.userId;
+      const replyToken = batchNumber === 1 ? event.replyToken : null;
+      await sendLineMessages(client, replyToken, targetId, summaryMessages);
       
       // Add a 1-minute delay between batches to respect RPM limits
       if (i + batchSize < totalChats) {
