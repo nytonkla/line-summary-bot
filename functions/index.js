@@ -6,19 +6,41 @@ const express = require('express');
 const line = require('@line/bot-sdk');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-// Initialize Firebase Admin SDK
-console.log('Initializing Firebase...');
-admin.initializeApp();
-console.log('Firebase app initialized');
+// Initialize Firebase Admin SDK lazily
+let dbInstance = null;
+function getDb() {
+  if (!dbInstance) {
+    if (!admin.apps.length) {
+      try {
+        const serviceAccount = require('./serviceAccountKey.json');
+        admin.initializeApp({
+          credential: admin.credential.cert(serviceAccount)
+        });
+      } catch (e) {
+        admin.initializeApp();
+      }
+    }
+    dbInstance = admin.firestore();
+  }
+  return dbInstance;
+}
 
-const db = admin.firestore();
-console.log('Firestore database connection established');
+const db = new Proxy({}, {
+  get: (_, prop) => {
+    const instance = getDb();
+    const value = instance[prop];
+    return typeof value === 'function' ? value.bind(instance) : value;
+  }
+});
 
-// Initialize Google AI (Gemini) - only if API key is available
-let genAI, model;
-if (process.env.GEMINI_API_KEY) {
-  genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+// Initialize Google AI (Gemini) lazily
+let genAI, modelInstance;
+function getModel() {
+  if (!modelInstance && process.env.GEMINI_API_KEY) {
+    genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    modelInstance = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+  }
+  return modelInstance;
 }
 
 // Global variable to store Google Sheets data
@@ -130,6 +152,7 @@ const geminiRateLimiter = new RateLimiter(14, 60000); // Max 14 requests per 60 
 
 // Enhanced function to generate content with retry logic and rate limiting
 async function generateContentWithRetry(prompt, maxRetries = 3) {
+  const model = getModel();
   if (!model) {
     throw new Error('Gemini model not initialized. Please check GEMINI_API_KEY environment variable.');
   }
