@@ -1412,8 +1412,10 @@ async function initializeSheetsData() {
   }
 }
 
-// Export all routes as Firebase Functions
-exports.lineSummaryBot = functions.https.onRequest(async (req, res) => {
+const { onRequest } = require('firebase-functions/v2/https');
+
+// Export all routes as Firebase Functions v2
+exports.lineSummaryBot = onRequest({ timeoutSeconds: 300 }, async (req, res) => {
   // Initialize sheets data on first request
   await initializeSheetsData();
   
