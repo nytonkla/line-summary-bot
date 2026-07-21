@@ -6,7 +6,6 @@ const express = require('express');
 const line = require('@line/bot-sdk');
 const admin = require('firebase-admin');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { google } = require('googleapis');
 
 // Initialize Firebase Admin SDK
 console.log('Initializing Firebase...');
@@ -420,6 +419,7 @@ async function fetchGoogleSheetsData() {
     console.log('Spreadsheet ID:', spreadsheetId);
     
     // Initialize Google Sheets API (using API key for public sheets)
+    const { google } = require('googleapis');
     const sheets = google.sheets({ version: 'v4', auth: process.env.GOOGLE_API_KEY });
     
     // Fetch data from the sheet
