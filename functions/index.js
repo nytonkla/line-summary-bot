@@ -1315,16 +1315,17 @@ async function handleEvent(event) {
         // Handle /help command
         const helpText = `🤖 **LINE Summary Bot**
 
-AI-powered bot that summarizes group chats and matches codes to links.
+AI-powered bot for group summaries, business card scanning, and code matching.
 
-**Commands:**
-• /sumgroup - Generate group chat summaries
-• /sumdirect - Analyze direct messages with code matching and response categorization
+**Available Commands & Features:**
+• /sumgroup - Generate AI summaries for all group chats
+• /sumdirect - Analyze direct messages with code matching
+• 🎴 Business Card Scanner - Send any photo of a business card to extract contact details & get a downloadable .vcf file!
 • /updatecode - Refresh code database from Google Sheets
-• /status - Show system uptime and user statistics
+• /status - Show system uptime and statistics
 • /help or /? - Show this help message
 
-Send any code to get its corresponding link!`;
+💡 Send any code to get its link, or send a business card image to scan!`;
 
         const reply = { type: 'text', text: helpText };
         return client.replyMessage(event.replyToken, reply);
