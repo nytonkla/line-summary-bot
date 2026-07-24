@@ -796,117 +796,238 @@ Translation Rule: If the text is in simplified Chinese, Arabic, or any language 
     // 3. Construct vCard string
     const vcardContent = generateVCard(contactData);
 
-    // 4. Upload vCard to Firebase Cloud Storage & generate signed URL safely
+    // 4. Upload vCard & Hero Image to Firebase Cloud Storage & generate signed URLs
     let signedUrl = null;
+    let heroImageUrl = null;
+    const safeName = (contactData.firstName || 'contact').replace(/[^a-zA-Z0-9]/g, '_');
+    const bucketName = process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.appspot.com';
+    let bucket;
     try {
-      const bucketName = process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.appspot.com';
-      let bucket;
-      try {
-        bucket = admin.storage().bucket(bucketName);
-      } catch (e) {
-        bucket = admin.storage().bucket();
-      }
+      bucket = admin.storage().bucket(bucketName);
+    } catch (e) {
+      bucket = admin.storage().bucket();
+    }
 
-      const safeName = (contactData.firstName || 'contact').replace(/[^a-zA-Z0-9]/g, '_');
+    // Upload vCard (.vcf)
+    try {
       const fileName = `vcards/card_${safeName}_${Date.now()}.vcf`;
       const file = bucket.file(fileName);
 
       await file.save(vcardContent, {
         contentType: 'text/vcard',
-        metadata: {
-          contentType: 'text/vcard',
-        },
+        metadata: { contentType: 'text/vcard' },
       });
 
-      const [url] = await file.getSignedUrl({
+      const [vcfUrl] = await file.getSignedUrl({
         action: 'read',
         expires: Date.now() + 7 * 24 * 60 * 60 * 1000, // 7 days
       });
-      signedUrl = url;
+      signedUrl = vcfUrl;
       console.log('vCard uploaded successfully. Signed URL:', signedUrl);
     } catch (storageErr) {
-      console.warn('Firebase Storage upload warning (proceeding with contact display):', storageErr.message);
+      console.warn('Firebase Storage vCard upload warning:', storageErr.message);
     }
 
-    // 5. Construct LINE Reply Message (Flex Message)
-    const displayName = `${contactData.firstName || ''} ${contactData.lastName || ''}`.trim() || 'Scanned Contact';
-    const subtitle = [contactData.jobTitle, contactData.company].filter(Boolean).join(' • ') || 'Business Card';
+    // Upload Business Card Image (Hero)
+    try {
+      const imgFileName = `card_images/card_${safeName}_${Date.now()}.jpg`;
+      const imgFile = bucket.file(imgFileName);
 
-    const bubbleContents = {
-      type: 'bubble',
-      header: {
+      await imgFile.save(imageBuffer, {
+        contentType: 'image/jpeg',
+        metadata: { contentType: 'image/jpeg' },
+      });
+
+      const [imgUrl] = await imgFile.getSignedUrl({
+        action: 'read',
+        expires: Date.now() + 7 * 24 * 60 * 60 * 1000, // 7 days
+      });
+      heroImageUrl = imgUrl;
+      console.log('Hero image uploaded successfully. Signed URL:', heroImageUrl);
+    } catch (imgStorageErr) {
+      console.warn('Firebase Storage Hero image upload warning:', imgStorageErr.message);
+    }
+
+    // 5. Construct LINE Reply Message (User Specified Flex Message JSON)
+    const displayName = `${contactData.firstName || ''} ${contactData.lastName || ''}`.trim() || 'Scanned Contact';
+    
+    let subtitleText = '';
+    if (contactData.jobTitle && contactData.company) {
+      subtitleText = `${contactData.jobTitle} @ ${contactData.company}`;
+    } else {
+      subtitleText = contactData.jobTitle || contactData.company || 'Business Contact';
+    }
+
+    const contactRows = [];
+
+    if (contactData.phone) {
+      const cleanPhone = contactData.phone.replace(/[^0-9+]/g, '');
+      contactRows.push({
         type: 'box',
-        layout: 'vertical',
-        backgroundColor: '#1DB446',
+        layout: 'horizontal',
         contents: [
           {
             type: 'text',
-            text: '🎴 BUSINESS CARD SCANNED',
-            weight: 'bold',
-            color: '#FFFFFF',
-            size: 'xs'
+            text: 'Phone',
+            size: 'sm',
+            color: '#555555',
+            flex: 1
           },
+          {
+            type: 'text',
+            text: contactData.phone,
+            size: 'sm',
+            color: '#111111',
+            flex: 2,
+            align: 'end',
+            action: {
+              type: 'uri',
+              label: 'Call',
+              uri: `tel:${cleanPhone}`
+            }
+          }
+        ]
+      });
+    }
+
+    if (contactData.email) {
+      contactRows.push({
+        type: 'box',
+        layout: 'horizontal',
+        contents: [
+          {
+            type: 'text',
+            text: 'Email',
+            size: 'sm',
+            color: '#555555',
+            flex: 1
+          },
+          {
+            type: 'text',
+            text: contactData.email,
+            size: 'sm',
+            color: '#111111',
+            flex: 2,
+            align: 'end',
+            wrap: true,
+            action: {
+              type: 'uri',
+              label: 'Mail',
+              uri: `mailto:${contactData.email}`
+            }
+          }
+        ]
+      });
+    }
+
+    if (contactData.website) {
+      const cleanWeb = contactData.website.startsWith('http') ? contactData.website : `https://${contactData.website}`;
+      contactRows.push({
+        type: 'box',
+        layout: 'horizontal',
+        contents: [
+          {
+            type: 'text',
+            text: 'Website',
+            size: 'sm',
+            color: '#555555',
+            flex: 1
+          },
+          {
+            type: 'text',
+            text: contactData.website,
+            size: 'sm',
+            color: '#111111',
+            flex: 2,
+            align: 'end',
+            wrap: true,
+            action: {
+              type: 'uri',
+              label: 'Web',
+              uri: cleanWeb
+            }
+          }
+        ]
+      });
+    }
+
+    const footerButtons = [];
+
+    if (signedUrl) {
+      footerButtons.push({
+        type: 'button',
+        style: 'secondary',
+        height: 'sm',
+        action: {
+          type: 'uri',
+          label: 'Download Contact .vcf',
+          uri: signedUrl
+        }
+      });
+    }
+
+    const googleContactsUrl = 'https://contacts.google.com/new';
+    footerButtons.push({
+      type: 'button',
+      style: 'primary',
+      height: 'sm',
+      color: '#4285F4',
+      action: {
+        type: 'uri',
+        label: 'Save to Google Contacts',
+        uri: googleContactsUrl
+      }
+    });
+
+    const bubbleContents = {
+      type: 'bubble',
+      size: 'kilo',
+      ...(heroImageUrl ? {
+        hero: {
+          type: 'image',
+          url: heroImageUrl,
+          size: 'full',
+          aspectRatio: '1:1',
+          aspectMode: 'cover'
+        }
+      } : {}),
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
           {
             type: 'text',
             text: displayName,
             weight: 'bold',
-            color: '#FFFFFF',
             size: 'xl',
-            margin: 'md',
-            wrap: true
+            margin: 'md'
           },
           {
             type: 'text',
-            text: subtitle,
-            color: '#E0F7E9',
+            text: subtitleText,
             size: 'xs',
-            margin: 'xs',
+            color: '#aaaaaa',
             wrap: true
+          },
+          {
+            type: 'separator',
+            margin: 'xxl'
+          },
+          {
+            type: 'box',
+            layout: 'vertical',
+            margin: 'xxl',
+            spacing: 'sm',
+            contents: contactRows
           }
         ]
       },
-      body: {
+      footer: {
         type: 'box',
         layout: 'vertical',
-        spacing: 'md',
-        contents: [
-          ...(contactData.phone ? [{
-            type: 'box',
-            layout: 'baseline',
-            spacing: 'sm',
-            contents: [
-              { type: 'text', text: '📞 Phone', color: '#888888', size: 'sm', flex: 2 },
-              { type: 'text', text: contactData.phone, wrap: true, color: '#333333', size: 'sm', flex: 5 }
-            ]
-          }] : []),
-          ...(contactData.email ? [{
-            type: 'box',
-            layout: 'baseline',
-            spacing: 'sm',
-            contents: [
-              { type: 'text', text: '✉️ Email', color: '#888888', size: 'sm', flex: 2 },
-              { type: 'text', text: contactData.email, wrap: true, color: '#333333', size: 'sm', flex: 5 }
-            ]
-          }] : []),
-          ...(contactData.website ? [{
-            type: 'box',
-            layout: 'baseline',
-            spacing: 'sm',
-            contents: [
-              { type: 'text', text: '🌐 Web', color: '#888888', size: 'sm', flex: 2 },
-              { type: 'text', text: contactData.website, wrap: true, color: '#333333', size: 'sm', flex: 5 }
-            ]
-          }] : []),
-          ...(contactData.company ? [{
-            type: 'box',
-            layout: 'baseline',
-            spacing: 'sm',
-            contents: [
-              { type: 'text', text: '🏢 Company', color: '#888888', size: 'sm', flex: 2 },
-              { type: 'text', text: contactData.company, wrap: true, color: '#333333', size: 'sm', flex: 5 }
-            ]
-          }] : [])
-        ]
+        spacing: 'sm',
+        contents: footerButtons,
+        flex: 0
       }
     };
 
