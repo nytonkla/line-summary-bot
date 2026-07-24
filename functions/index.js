@@ -1026,11 +1026,248 @@ app.post('/webhook', (req, res) => {
   });
 });
 
+// Helper to convert readable stream to Buffer
+function streamToBuffer(stream) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    stream.on('data', (chunk) => chunks.push(chunk));
+    stream.on('error', (err) => reject(err));
+    stream.on('end', () => resolve(Buffer.concat(chunks)));
+  });
+}
+
+// vCard 3.0 String Generator
+function generateVCard(data) {
+  const firstName = data.firstName || '';
+  const lastName = data.lastName || '';
+  const fn = `${firstName} ${lastName}`.trim() || 'Scanned Contact';
+  const n = `${lastName};${firstName};;;`;
+
+  let vcard = 'BEGIN:VCARD\r\n';
+  vcard += 'VERSION:3.0\r\n';
+  vcard += `FN:${fn}\r\n`;
+  vcard += `N:${n}\r\n`;
+  if (data.company) vcard += `ORG:${data.company}\r\n`;
+  if (data.jobTitle) vcard += `TITLE:${data.jobTitle}\r\n`;
+  if (data.email) vcard += `EMAIL;TYPE=INTERNET,WORK:${data.email}\r\n`;
+  if (data.phone) vcard += `TEL;TYPE=CELL,VOICE:${data.phone}\r\n`;
+  if (data.website) vcard += `URL:${data.website}\r\n`;
+  vcard += 'END:VCARD\r\n';
+  return vcard;
+}
+
+// Business Card Scanner Feature (Multimodal LLM + vCard + Firebase Storage)
+async function processBusinessCardImage(client, event) {
+  try {
+    const messageId = event.message.id;
+    console.log(`Processing business card image for message ID: ${messageId}`);
+
+    // 1. Download image stream from LINE Messaging API
+    const stream = await client.getMessageContent(messageId);
+    const imageBuffer = await streamToBuffer(stream);
+
+    // 2. LLM Processing with Gemini
+    const model = getModel();
+    if (!model) {
+      throw new Error('Gemini model not initialized. Please check GEMINI_API_KEY environment variable.');
+    }
+
+    const imagePart = {
+      inlineData: {
+        data: imageBuffer.toString('base64'),
+        mimeType: 'image/jpeg',
+      },
+    };
+
+    const prompt = `Extract contact information from this business card. Return a strictly formatted JSON object with the keys: firstName, lastName, company, jobTitle, email, phone, and website.
+
+Translation Rule: If the text is in simplified Chinese, Arabic, or any language other than English, translate it to English. You MUST append the original script in parentheses next to the English translation (e.g., 'Name: John Doe (张伟)').`;
+
+    await geminiRateLimiter.waitForSlot();
+    const result = await model.generateContent([prompt, imagePart]);
+    const response = await result.response;
+    const rawText = response.text();
+
+    console.log('Raw Gemini OCR result:', rawText);
+
+    // Parse JSON safely
+    let cleanedText = rawText.trim();
+    if (cleanedText.startsWith('```json')) {
+      cleanedText = cleanedText.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+    } else if (cleanedText.startsWith('```')) {
+      cleanedText = cleanedText.replace(/^```\s*/, '').replace(/\s*```$/, '');
+    }
+
+    let contactData = {};
+    try {
+      contactData = JSON.parse(cleanedText);
+    } catch (parseErr) {
+      console.error('JSON parse error from Gemini output:', parseErr, 'Raw output:', rawText);
+      contactData = {
+        firstName: 'Scanned',
+        lastName: 'Contact',
+        company: null,
+        jobTitle: null,
+        email: null,
+        phone: null,
+        website: null,
+      };
+    }
+
+    // 3. Construct vCard string
+    const vcardContent = generateVCard(contactData);
+
+    // 4. Upload vCard to Firebase Cloud Storage & generate signed URL
+    getDb(); // Ensure admin SDK initialized
+    const bucketName = process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.firebasestorage.app';
+    const bucket = admin.storage().bucket(bucketName);
+
+    const safeName = (contactData.firstName || 'contact').replace(/[^a-zA-Z0-9]/g, '_');
+    const fileName = `vcards/card_${safeName}_${Date.now()}.vcf`;
+    const file = bucket.file(fileName);
+
+    await file.save(vcardContent, {
+      contentType: 'text/vcard',
+      metadata: {
+        contentType: 'text/vcard',
+      },
+    });
+
+    const [signedUrl] = await file.getSignedUrl({
+      action: 'read',
+      expires: Date.now() + 7 * 24 * 60 * 60 * 1000, // 7 days
+    });
+
+    console.log('vCard uploaded successfully. Signed URL:', signedUrl);
+
+    // 5. Construct LINE Reply Message (Flex Message)
+    const displayName = `${contactData.firstName || ''} ${contactData.lastName || ''}`.trim() || 'Scanned Contact';
+    const subtitle = [contactData.jobTitle, contactData.company].filter(Boolean).join(' • ') || 'Business Card';
+
+    const flexMessage = {
+      type: 'flex',
+      altText: `🎴 Business Card: ${displayName}`,
+      contents: {
+        type: 'bubble',
+        header: {
+          type: 'box',
+          layout: 'vertical',
+          backgroundColor: '#1DB446',
+          contents: [
+            {
+              type: 'text',
+              text: '🎴 BUSINESS CARD SCANNED',
+              weight: 'bold',
+              color: '#FFFFFF',
+              size: 'xs'
+            },
+            {
+              type: 'text',
+              text: displayName,
+              weight: 'bold',
+              color: '#FFFFFF',
+              size: 'xl',
+              margin: 'md',
+              wrap: true
+            },
+            {
+              type: 'text',
+              text: subtitle,
+              color: '#E0F7E9',
+              size: 'xs',
+              margin: 'xs',
+              wrap: true
+            }
+          ]
+        },
+        body: {
+          type: 'box',
+          layout: 'vertical',
+          spacing: 'md',
+          contents: [
+            ...(contactData.phone ? [{
+              type: 'box',
+              layout: 'baseline',
+              spacing: 'sm',
+              contents: [
+                { type: 'text', text: '📞 Phone', color: '#888888', size: 'sm', flex: 2 },
+                { type: 'text', text: contactData.phone, wrap: true, color: '#333333', size: 'sm', flex: 5 }
+              ]
+            }] : []),
+            ...(contactData.email ? [{
+              type: 'box',
+              layout: 'baseline',
+              spacing: 'sm',
+              contents: [
+                { type: 'text', text: '✉️ Email', color: '#888888', size: 'sm', flex: 2 },
+                { type: 'text', text: contactData.email, wrap: true, color: '#333333', size: 'sm', flex: 5 }
+              ]
+            }] : []),
+            ...(contactData.website ? [{
+              type: 'box',
+              layout: 'baseline',
+              spacing: 'sm',
+              contents: [
+                { type: 'text', text: '🌐 Web', color: '#888888', size: 'sm', flex: 2 },
+                { type: 'text', text: contactData.website, wrap: true, color: '#333333', size: 'sm', flex: 5 }
+              ]
+            }] : []),
+            ...(contactData.company ? [{
+              type: 'box',
+              layout: 'baseline',
+              spacing: 'sm',
+              contents: [
+                { type: 'text', text: '🏢 Company', color: '#888888', size: 'sm', flex: 2 },
+                { type: 'text', text: contactData.company, wrap: true, color: '#333333', size: 'sm', flex: 5 }
+              ]
+            }] : [])
+          ]
+        },
+        footer: {
+          type: 'box',
+          layout: 'vertical',
+          contents: [
+            {
+              type: 'button',
+              style: 'primary',
+              color: '#1DB446',
+              action: {
+                type: 'uri',
+                label: '📥 Save Contact (.vcf)',
+                uri: signedUrl
+              }
+            }
+          ]
+        }
+      }
+    };
+
+    return client.replyMessage(event.replyToken, flexMessage);
+
+  } catch (error) {
+    console.error('Error processing business card image:', error);
+    const reply = {
+      type: 'text',
+      text: '❌ Failed to process business card image. Please ensure the image is clear and try again.'
+    };
+    return client.replyMessage(event.replyToken, reply);
+  }
+}
+
 // --- 3. DEFINE THE EVENT HANDLER ---
 // This function handles the incoming messages
 async function handleEvent(event) {
-  // We only want to handle text messages
-  if (event.type !== 'message' || event.message.type !== 'text') {
+  if (!event || event.type !== 'message') {
+    return Promise.resolve(null);
+  }
+
+  // Handle image messages (Business Card Scanner)
+  if (event.message.type === 'image') {
+    return processBusinessCardImage(client, event);
+  }
+
+  // We only want to handle text messages for standard bot commands
+  if (event.message.type !== 'text') {
     return Promise.resolve(null);
   }
 
