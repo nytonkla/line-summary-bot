@@ -684,10 +684,66 @@ function generateVCard(data) {
   return vcard;
 }
 
-// Business Card Scanner Feature (Multimodal LLM + vCard + Firebase Storage)
-async function processBusinessCardImage(client, event) {
+// Helper to check if /newcontact command was sent in chat recently (last 5 mins)
+async function hasRecentNewContactCommand(chatsId) {
   try {
-    const messageId = event.message.id;
+    const snapshot = await db.collection('chats')
+      .doc(chatsId)
+      .collection('messages')
+      .orderBy('timestamp', 'desc')
+      .limit(5)
+      .get();
+
+    if (snapshot.empty) return false;
+    const fiveMinsAgo = Date.now() - 5 * 60 * 1000;
+
+    for (const doc of snapshot.docs) {
+      const data = doc.data();
+      const msgTime = data.timestamp?.toDate?.() ? data.timestamp.toDate().getTime() : Date.now();
+      if (msgTime < fiveMinsAgo) break;
+      if (data.text && data.text.trim().toLowerCase().includes('/newcontact')) {
+        return true;
+      }
+    }
+    return false;
+  } catch (err) {
+    console.error('Error checking recent /newcontact command:', err);
+    return false;
+  }
+}
+
+// Helper to find recent image message ID in chat (last 5 mins)
+async function getRecentImageMessageId(chatsId) {
+  try {
+    const snapshot = await db.collection('chats')
+      .doc(chatsId)
+      .collection('messages')
+      .orderBy('timestamp', 'desc')
+      .limit(5)
+      .get();
+
+    if (snapshot.empty) return null;
+    const fiveMinsAgo = Date.now() - 5 * 60 * 1000;
+
+    for (const doc of snapshot.docs) {
+      const data = doc.data();
+      const msgTime = data.timestamp?.toDate?.() ? data.timestamp.toDate().getTime() : Date.now();
+      if (msgTime < fiveMinsAgo) break;
+      if (data.messageType === 'image' && data.messageId) {
+        return data.messageId;
+      }
+    }
+    return null;
+  } catch (err) {
+    console.error('Error finding recent image message ID:', err);
+    return null;
+  }
+}
+
+// Business Card Scanner Feature (Multimodal LLM + vCard + Firebase Storage)
+async function processBusinessCardImage(client, event, targetMessageId = null) {
+  try {
+    const messageId = targetMessageId || event.message.id;
     console.log(`Processing business card image for message ID: ${messageId}`);
 
     // 1. Download image stream from LINE Messaging API
@@ -865,7 +921,7 @@ Translation Rule: If the text is in simplified Chinese, Arabic, or any language 
             color: '#1DB446',
             action: {
               type: 'uri',
-              label: '📥 Save Contact (.vcf)',
+              label: '📥 Download .vcf File',
               uri: signedUrl
             }
           }
@@ -898,9 +954,23 @@ async function handleEvent(event) {
     return Promise.resolve(null);
   }
 
-  // Handle image messages (Business Card Scanner)
+  // Save message to database first
+  await saveMessageToDatabase(event, client);
+
+  const chatsId = event.source.groupId || event.source.userId;
+
+  // Handle image messages (Business Card Scanner - requires /newcontact trigger)
   if (event.message.type === 'image') {
-    return processBusinessCardImage(client, event);
+    const hasCaptionCommand = event.message.text && event.message.text.toLowerCase().includes('/newcontact');
+    const hasRecentCommand = await hasRecentNewContactCommand(chatsId);
+
+    if (hasCaptionCommand || hasRecentCommand) {
+      console.log('Image received with /newcontact trigger. Processing business card...');
+      return processBusinessCardImage(client, event);
+    } else {
+      console.log('Image received without /newcontact trigger. Skipping OCR scanner.');
+      return Promise.resolve(null);
+    }
   }
 
   // We only want to handle text messages for standard bot commands
@@ -909,6 +979,24 @@ async function handleEvent(event) {
   }
 
   try {
+    const textLower = event.message.text.trim().toLowerCase();
+
+    // Check for /newcontact command
+    if (textLower.startsWith('/newcontact')) {
+      console.log('Processing /newcontact command...');
+      const recentImageId = await getRecentImageMessageId(chatsId);
+      if (recentImageId) {
+        console.log(`Found recent image message ID ${recentImageId} for /newcontact. Processing business card...`);
+        return processBusinessCardImage(client, event, recentImageId);
+      } else {
+        const reply = {
+          type: 'text',
+          text: '🎴 **Business Card Scanner**\n\nPlease send a photo of a business card with **/newcontact** (or send **/newcontact** right after/before sending the photo) to extract contact details and generate a .vcf file!'
+        };
+        return client.replyMessage(event.replyToken, reply);
+      }
+    }
+
     // Check if the message is a command FIRST (before saving to database)
     if (event.message.text.toLowerCase() === '/updatecode') {
       try {
@@ -941,12 +1029,12 @@ AI-powered bot for group summaries, business card scanning, and code matching.
 **Available Commands & Features:**
 • /sumgroup - Generate AI summaries for all group chats
 • /sumdirect - Analyze direct messages with code matching
-• 🎴 Business Card Scanner - Send any photo of a business card to extract contact details & get a downloadable .vcf file!
+• /newcontact - Extract contact details from business card & get downloadable .vcf file!
 • /updatecode - Refresh code database from Google Sheets
 • /status - Show system uptime and statistics
 • /help or /? - Show this help message
 
-💡 Send any code to get its link, or send a business card image to scan!`;
+💡 Send any code to get its link, or send a business card image with /newcontact!`;
 
       const reply = { type: 'text', text: helpText };
       return client.replyMessage(event.replyToken, reply);
