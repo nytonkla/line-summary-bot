@@ -1117,129 +1117,145 @@ Translation Rule: If the text is in simplified Chinese, Arabic, or any language 
     // 3. Construct vCard string
     const vcardContent = generateVCard(contactData);
 
-    // 4. Upload vCard to Firebase Cloud Storage & generate signed URL
-    getDb(); // Ensure admin SDK initialized
-    const bucketName = process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.firebasestorage.app';
-    const bucket = admin.storage().bucket(bucketName);
+    // 4. Upload vCard to Firebase Cloud Storage & generate signed URL safely
+    let signedUrl = null;
+    try {
+      getDb(); // Ensure admin SDK initialized
+      // Try configured bucket, fallback to standard .appspot.com bucket, or default bucket
+      const bucketName = process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.appspot.com';
+      let bucket;
+      try {
+        bucket = admin.storage().bucket(bucketName);
+      } catch (e) {
+        bucket = admin.storage().bucket();
+      }
 
-    const safeName = (contactData.firstName || 'contact').replace(/[^a-zA-Z0-9]/g, '_');
-    const fileName = `vcards/card_${safeName}_${Date.now()}.vcf`;
-    const file = bucket.file(fileName);
+      const safeName = (contactData.firstName || 'contact').replace(/[^a-zA-Z0-9]/g, '_');
+      const fileName = `vcards/card_${safeName}_${Date.now()}.vcf`;
+      const file = bucket.file(fileName);
 
-    await file.save(vcardContent, {
-      contentType: 'text/vcard',
-      metadata: {
+      await file.save(vcardContent, {
         contentType: 'text/vcard',
-      },
-    });
+        metadata: {
+          contentType: 'text/vcard',
+        },
+      });
 
-    const [signedUrl] = await file.getSignedUrl({
-      action: 'read',
-      expires: Date.now() + 7 * 24 * 60 * 60 * 1000, // 7 days
-    });
-
-    console.log('vCard uploaded successfully. Signed URL:', signedUrl);
+      const [url] = await file.getSignedUrl({
+        action: 'read',
+        expires: Date.now() + 7 * 24 * 60 * 60 * 1000, // 7 days
+      });
+      signedUrl = url;
+      console.log('vCard uploaded successfully. Signed URL:', signedUrl);
+    } catch (storageErr) {
+      console.warn('Firebase Storage upload warning (proceeding with contact display):', storageErr.message);
+    }
 
     // 5. Construct LINE Reply Message (Flex Message)
     const displayName = `${contactData.firstName || ''} ${contactData.lastName || ''}`.trim() || 'Scanned Contact';
     const subtitle = [contactData.jobTitle, contactData.company].filter(Boolean).join(' • ') || 'Business Card';
 
+    const bubbleContents = {
+      type: 'bubble',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#1DB446',
+        contents: [
+          {
+            type: 'text',
+            text: '🎴 BUSINESS CARD SCANNED',
+            weight: 'bold',
+            color: '#FFFFFF',
+            size: 'xs'
+          },
+          {
+            type: 'text',
+            text: displayName,
+            weight: 'bold',
+            color: '#FFFFFF',
+            size: 'xl',
+            margin: 'md',
+            wrap: true
+          },
+          {
+            type: 'text',
+            text: subtitle,
+            color: '#E0F7E9',
+            size: 'xs',
+            margin: 'xs',
+            wrap: true
+          }
+        ]
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        contents: [
+          ...(contactData.phone ? [{
+            type: 'box',
+            layout: 'baseline',
+            spacing: 'sm',
+            contents: [
+              { type: 'text', text: '📞 Phone', color: '#888888', size: 'sm', flex: 2 },
+              { type: 'text', text: contactData.phone, wrap: true, color: '#333333', size: 'sm', flex: 5 }
+            ]
+          }] : []),
+          ...(contactData.email ? [{
+            type: 'box',
+            layout: 'baseline',
+            spacing: 'sm',
+            contents: [
+              { type: 'text', text: '✉️ Email', color: '#888888', size: 'sm', flex: 2 },
+              { type: 'text', text: contactData.email, wrap: true, color: '#333333', size: 'sm', flex: 5 }
+            ]
+          }] : []),
+          ...(contactData.website ? [{
+            type: 'box',
+            layout: 'baseline',
+            spacing: 'sm',
+            contents: [
+              { type: 'text', text: '🌐 Web', color: '#888888', size: 'sm', flex: 2 },
+              { type: 'text', text: contactData.website, wrap: true, color: '#333333', size: 'sm', flex: 5 }
+            ]
+          }] : []),
+          ...(contactData.company ? [{
+            type: 'box',
+            layout: 'baseline',
+            spacing: 'sm',
+            contents: [
+              { type: 'text', text: '🏢 Company', color: '#888888', size: 'sm', flex: 2 },
+              { type: 'text', text: contactData.company, wrap: true, color: '#333333', size: 'sm', flex: 5 }
+            ]
+          }] : [])
+        ]
+      }
+    };
+
+    if (signedUrl) {
+      bubbleContents.footer = {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            color: '#1DB446',
+            action: {
+              type: 'uri',
+              label: '📥 Save Contact (.vcf)',
+              uri: signedUrl
+            }
+          }
+        ]
+      };
+    }
+
     const flexMessage = {
       type: 'flex',
       altText: `🎴 Business Card: ${displayName}`,
-      contents: {
-        type: 'bubble',
-        header: {
-          type: 'box',
-          layout: 'vertical',
-          backgroundColor: '#1DB446',
-          contents: [
-            {
-              type: 'text',
-              text: '🎴 BUSINESS CARD SCANNED',
-              weight: 'bold',
-              color: '#FFFFFF',
-              size: 'xs'
-            },
-            {
-              type: 'text',
-              text: displayName,
-              weight: 'bold',
-              color: '#FFFFFF',
-              size: 'xl',
-              margin: 'md',
-              wrap: true
-            },
-            {
-              type: 'text',
-              text: subtitle,
-              color: '#E0F7E9',
-              size: 'xs',
-              margin: 'xs',
-              wrap: true
-            }
-          ]
-        },
-        body: {
-          type: 'box',
-          layout: 'vertical',
-          spacing: 'md',
-          contents: [
-            ...(contactData.phone ? [{
-              type: 'box',
-              layout: 'baseline',
-              spacing: 'sm',
-              contents: [
-                { type: 'text', text: '📞 Phone', color: '#888888', size: 'sm', flex: 2 },
-                { type: 'text', text: contactData.phone, wrap: true, color: '#333333', size: 'sm', flex: 5 }
-              ]
-            }] : []),
-            ...(contactData.email ? [{
-              type: 'box',
-              layout: 'baseline',
-              spacing: 'sm',
-              contents: [
-                { type: 'text', text: '✉️ Email', color: '#888888', size: 'sm', flex: 2 },
-                { type: 'text', text: contactData.email, wrap: true, color: '#333333', size: 'sm', flex: 5 }
-              ]
-            }] : []),
-            ...(contactData.website ? [{
-              type: 'box',
-              layout: 'baseline',
-              spacing: 'sm',
-              contents: [
-                { type: 'text', text: '🌐 Web', color: '#888888', size: 'sm', flex: 2 },
-                { type: 'text', text: contactData.website, wrap: true, color: '#333333', size: 'sm', flex: 5 }
-              ]
-            }] : []),
-            ...(contactData.company ? [{
-              type: 'box',
-              layout: 'baseline',
-              spacing: 'sm',
-              contents: [
-                { type: 'text', text: '🏢 Company', color: '#888888', size: 'sm', flex: 2 },
-                { type: 'text', text: contactData.company, wrap: true, color: '#333333', size: 'sm', flex: 5 }
-              ]
-            }] : [])
-          ]
-        },
-        footer: {
-          type: 'box',
-          layout: 'vertical',
-          contents: [
-            {
-              type: 'button',
-              style: 'primary',
-              color: '#1DB446',
-              action: {
-                type: 'uri',
-                label: '📥 Save Contact (.vcf)',
-                uri: signedUrl
-              }
-            }
-          ]
-        }
-      }
+      contents: bubbleContents
     };
 
     return client.replyMessage(event.replyToken, flexMessage);
