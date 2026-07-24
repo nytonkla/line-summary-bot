@@ -23,7 +23,7 @@ console.log('Firestore database connection established');
 
 // Initialize Google AI (Gemini)
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-2.0-flash' });
+const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-3.5-flash' });
 
 // Global variable to store Google Sheets data
 let cachedSheetsData = [];
