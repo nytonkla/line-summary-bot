@@ -151,7 +151,7 @@ class RateLimiter {
 const geminiRateLimiter = new RateLimiter(14, 60000); // Max 14 requests per 60 seconds (1 minute)
 
 // Enhanced function to generate content with retry logic and rate limiting
-async function generateContentWithRetry(prompt, maxRetries = 3) {
+async function generateContentWithRetry(prompt, maxRetries = 5) {
   const model = getModel();
   if (!model) {
     throw new Error('Gemini model not initialized. Please check GEMINI_API_KEY environment variable.');
@@ -181,8 +181,8 @@ async function generateContentWithRetry(prompt, maxRetries = 3) {
         error.message.includes('rate limit')
       )) {
         if (attempt < maxRetries) {
-          // Exponential backoff: wait 2^attempt seconds
-          const waitTime = Math.pow(2, attempt) * 1000;
+          // Exponential backoff with jitter: wait (2^attempt * 2000) + random_jitter ms
+          const waitTime = Math.pow(2, attempt) * 2000 + Math.floor(Math.random() * 1000);
           console.log(`Rate limit hit. Waiting ${waitTime}ms before retry ${attempt + 1}...`);
           await new Promise(resolve => setTimeout(resolve, waitTime));
           continue;
@@ -1429,7 +1429,7 @@ async function initializeSheetsData() {
 const { onRequest } = require('firebase-functions/v2/https');
 
 // Export all routes as Firebase Functions v2
-exports.lineSummaryBot = onRequest({ timeoutSeconds: 300 }, async (req, res) => {
+exports.lineSummaryBot = onRequest({ timeoutSeconds: 300, maxInstances: 1 }, async (req, res) => {
   // Initialize sheets data on first request
   await initializeSheetsData();
   

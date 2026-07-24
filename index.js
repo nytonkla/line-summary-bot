@@ -133,7 +133,7 @@ class RateLimiter {
 const geminiRateLimiter = new RateLimiter(14, 60000); // Max 14 requests per 60 seconds (1 minute)
 
 // Enhanced function to generate content with retry logic and rate limiting
-async function generateContentWithRetry(prompt, maxRetries = 3) {
+async function generateContentWithRetry(prompt, maxRetries = 5) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       // Wait for rate limiter
@@ -158,8 +158,8 @@ async function generateContentWithRetry(prompt, maxRetries = 3) {
         error.message.includes('rate limit')
       )) {
         if (attempt < maxRetries) {
-          // Exponential backoff: wait 2^attempt seconds
-          const waitTime = Math.pow(2, attempt) * 1000;
+          // Exponential backoff with jitter: wait (2^attempt * 2000) + random_jitter ms
+          const waitTime = Math.pow(2, attempt) * 2000 + Math.floor(Math.random() * 1000);
           console.log(`Rate limit hit. Waiting ${waitTime}ms before retry ${attempt + 1}...`);
           await new Promise(resolve => setTimeout(resolve, waitTime));
           continue;
