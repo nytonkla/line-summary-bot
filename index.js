@@ -179,6 +179,7 @@ async function processChatsInBatches(client, event, chats, lastSummaryTimestamp,
   const totalChats = chats.length;
   console.log(`Processing ${totalChats} chats in batches of ${batchSize}`);
   
+  let anySummarySent = false;
   // Process chats in batches
   for (let i = 0; i < totalChats; i += batchSize) {
     const batch = chats.slice(i, i + batchSize);
@@ -260,6 +261,7 @@ Do not add any headlines, introductory sentences. Chat Conversation to Summarize
     
     // Send batch summary if there are summaries
     if (summaries.length > 0) {
+      anySummarySent = true;
       const batchTitle = totalBatches > 1 ? ` (Batch ${batchNumber}/${totalBatches})` : '';
       const combinedSummary = summaries.join('\n----\n');
       
@@ -278,6 +280,11 @@ Do not add any headlines, introductory sentences. Chat Conversation to Summarize
     }
   }
   
+  if (!anySummarySent) {
+    console.log('No new messages found to summarize since the last check.');
+    await sendLineMessages(client, event.replyToken, null, ['📋 No new messages found to summarize since the last check!']);
+  }
+  
   console.log(`Completed processing all ${totalChats} chats`);
 }
 
@@ -286,6 +293,7 @@ async function processCollectionGroupChatsInBatches(client, event, chatEntries, 
   const totalChats = chatEntries.length;
   console.log(`Processing ${totalChats} collection group chats in batches of ${batchSize}`);
   
+  let anySummarySent = false;
   // Process chats in batches
   for (let i = 0; i < totalChats; i += batchSize) {
     const batch = chatEntries.slice(i, i + batchSize);
@@ -362,6 +370,7 @@ async function processCollectionGroupChatsInBatches(client, event, chatEntries, 
     
     // Send batch summary if there are summaries
     if (summaries.length > 0) {
+      anySummarySent = true;
       const batchTitle = totalBatches > 1 ? ` (Batch ${batchNumber}/${totalBatches})` : '';
       const combinedSummary = summaries.join('----------\n');
       
@@ -378,6 +387,11 @@ async function processCollectionGroupChatsInBatches(client, event, chatEntries, 
         await new Promise(resolve => setTimeout(resolve, 60000)); // 60 seconds = 1 minute
       }
     }
+  }
+  
+  if (!anySummarySent) {
+    console.log('No new messages found to summarize since the last check.');
+    await sendLineMessages(client, event.replyToken, null, ['📋 No new messages found to summarize since the last check!']);
   }
   
   console.log(`Completed processing all ${totalChats} collection group chats`);
