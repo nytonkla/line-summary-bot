@@ -1052,6 +1052,10 @@ function generateVCard(data) {
   if (data.email) vcard += `EMAIL;TYPE=INTERNET,WORK:${data.email}\r\n`;
   if (data.phone) vcard += `TEL;TYPE=CELL,VOICE:${data.phone}\r\n`;
   if (data.website) vcard += `URL:${data.website}\r\n`;
+  if (data.lineId) {
+    const cleanLine = data.lineId.replace(/^@/, '');
+    vcard += `X-SOCIALPROFILE;type=line:https://line.me/ti/p/~${cleanLine}\r\n`;
+  }
   vcard += 'END:VCARD\r\n';
   return vcard;
 }
@@ -1135,7 +1139,7 @@ async function processBusinessCardImage(client, event, targetMessageId = null) {
       },
     };
 
-    const prompt = `Extract contact information from this business card. Return a strictly formatted JSON object with the keys: firstName, lastName, company, jobTitle, email, phone, and website.
+    const prompt = `Extract contact information from this business card. Return a strictly formatted JSON object with the keys: firstName, lastName, company, jobTitle, email, phone, website, and lineId.
 
 Translation Rule: If the text is in simplified Chinese, Arabic, or any language other than English, translate it to English. You MUST append the original script in parentheses next to the English translation (e.g., 'Name: John Doe (张伟)').`;
 
@@ -1167,6 +1171,7 @@ Translation Rule: If the text is in simplified Chinese, Arabic, or any language 
         email: null,
         phone: null,
         website: null,
+        lineId: null,
       };
     }
 
@@ -1230,12 +1235,41 @@ Translation Rule: If the text is in simplified Chinese, Arabic, or any language 
     // 5. Construct LINE Reply Message (User Specified Flex Message JSON)
     const displayName = `${contactData.firstName || ''} ${contactData.lastName || ''}`.trim() || 'Scanned Contact';
     
-    let subtitleText = '';
-    if (contactData.jobTitle && contactData.company) {
-      subtitleText = `${contactData.jobTitle} @ ${contactData.company}`;
-    } else {
-      subtitleText = contactData.jobTitle || contactData.company || 'Business Contact';
+    const bodyContents = [
+      {
+        type: 'text',
+        text: displayName,
+        weight: 'bold',
+        size: 'xl',
+        margin: 'md'
+      }
+    ];
+
+    if (contactData.jobTitle) {
+      bodyContents.push({
+        type: 'text',
+        text: contactData.jobTitle,
+        size: 'sm',
+        color: '#888888',
+        weight: 'bold',
+        wrap: true
+      });
     }
+
+    if (contactData.company) {
+      bodyContents.push({
+        type: 'text',
+        text: contactData.company,
+        size: 'xs',
+        color: '#aaaaaa',
+        wrap: true
+      });
+    }
+
+    bodyContents.push({
+      type: 'separator',
+      margin: 'xxl'
+    });
 
     const contactRows = [];
 
@@ -1247,7 +1281,7 @@ Translation Rule: If the text is in simplified Chinese, Arabic, or any language 
         contents: [
           {
             type: 'text',
-            text: 'Phone',
+            text: 'Mobile',
             size: 'sm',
             color: '#555555',
             flex: 1
@@ -1263,6 +1297,38 @@ Translation Rule: If the text is in simplified Chinese, Arabic, or any language 
               type: 'uri',
               label: 'Call',
               uri: `tel:${cleanPhone}`
+            }
+          }
+        ]
+      });
+    }
+
+    if (contactData.lineId) {
+      const rawLineId = contactData.lineId.trim();
+      const displayLineId = rawLineId.startsWith('@') ? rawLineId : `@${rawLineId}`;
+      const cleanLineId = rawLineId.replace(/^@/, '');
+      contactRows.push({
+        type: 'box',
+        layout: 'horizontal',
+        contents: [
+          {
+            type: 'text',
+            text: 'LINE',
+            size: 'sm',
+            color: '#555555',
+            flex: 1
+          },
+          {
+            type: 'text',
+            text: displayLineId,
+            size: 'sm',
+            color: '#111111',
+            flex: 2,
+            align: 'end',
+            action: {
+              type: 'uri',
+              label: 'Add LINE',
+              uri: `https://line.me/ti/p/~${cleanLineId}`
             }
           }
         ]
@@ -1330,6 +1396,14 @@ Translation Rule: If the text is in simplified Chinese, Arabic, or any language 
       });
     }
 
+    bodyContents.push({
+      type: 'box',
+      layout: 'vertical',
+      margin: 'xxl',
+      spacing: 'sm',
+      contents: contactRows
+    });
+
     const footerButtons = [];
 
     if (signedUrl) {
@@ -1339,7 +1413,7 @@ Translation Rule: If the text is in simplified Chinese, Arabic, or any language 
         height: 'sm',
         action: {
           type: 'uri',
-          label: 'Download Contact .vcf',
+          label: 'Download Contact',
           uri: signedUrl
         }
       });
@@ -1373,33 +1447,7 @@ Translation Rule: If the text is in simplified Chinese, Arabic, or any language 
       body: {
         type: 'box',
         layout: 'vertical',
-        contents: [
-          {
-            type: 'text',
-            text: displayName,
-            weight: 'bold',
-            size: 'xl',
-            margin: 'md'
-          },
-          {
-            type: 'text',
-            text: subtitleText,
-            size: 'xs',
-            color: '#aaaaaa',
-            wrap: true
-          },
-          {
-            type: 'separator',
-            margin: 'xxl'
-          },
-          {
-            type: 'box',
-            layout: 'vertical',
-            margin: 'xxl',
-            spacing: 'sm',
-            contents: contactRows
-          }
-        ]
+        contents: bodyContents
       },
       footer: {
         type: 'box',
