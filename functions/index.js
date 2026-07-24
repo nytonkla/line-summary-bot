@@ -1060,37 +1060,48 @@ function generateVCard(data) {
   return vcard;
 }
 
-// Helper to check if /newcontact command was sent in chat recently (last 5 mins)
-async function hasRecentNewContactCommand(chatsId) {
+// Helper to check if /newcontact 15-second timer window is active
+async function isNewContactSessionActive(chatsId) {
   try {
+    getDb();
+    const chatDoc = await db.collection('chats').doc(chatsId).get();
+    if (chatDoc.exists) {
+      const session = chatDoc.data().newcontactSession;
+      if (session && session.active && Date.now() <= session.expiresAt) {
+        return true;
+      }
+    }
+
+    // Fallback: check if /newcontact message was sent in last 15 seconds
     const snapshot = await db.collection('chats')
       .doc(chatsId)
       .collection('messages')
       .orderBy('timestamp', 'desc')
-      .limit(5)
+      .limit(3)
       .get();
 
     if (snapshot.empty) return false;
-    const fiveMinsAgo = Date.now() - 5 * 60 * 1000;
+    const fifteenSecsAgo = Date.now() - 15 * 1000;
 
     for (const doc of snapshot.docs) {
       const data = doc.data();
       const msgTime = data.timestamp?.toDate?.() ? data.timestamp.toDate().getTime() : Date.now();
-      if (msgTime < fiveMinsAgo) break;
+      if (msgTime < fifteenSecsAgo) break;
       if (data.text && data.text.trim().toLowerCase().includes('/newcontact')) {
         return true;
       }
     }
     return false;
   } catch (err) {
-    console.error('Error checking recent /newcontact command:', err);
+    console.error('Error checking active /newcontact session:', err);
     return false;
   }
 }
 
-// Helper to find recent image message ID in chat (last 5 mins)
+// Helper to find recent image message ID in chat (last 15 seconds)
 async function getRecentImageMessageId(chatsId) {
   try {
+    getDb();
     const snapshot = await db.collection('chats')
       .doc(chatsId)
       .collection('messages')
@@ -1099,12 +1110,12 @@ async function getRecentImageMessageId(chatsId) {
       .get();
 
     if (snapshot.empty) return null;
-    const fiveMinsAgo = Date.now() - 5 * 60 * 1000;
+    const fifteenSecsAgo = Date.now() - 15 * 1000;
 
     for (const doc of snapshot.docs) {
       const data = doc.data();
       const msgTime = data.timestamp?.toDate?.() ? data.timestamp.toDate().getTime() : Date.now();
-      if (msgTime < fiveMinsAgo) break;
+      if (msgTime < fifteenSecsAgo) break;
       if (data.messageType === 'image' && data.messageId) {
         return data.messageId;
       }
@@ -1464,7 +1475,12 @@ Translation Rule: If the text is in simplified Chinese, Arabic, or any language 
       contents: bubbleContents
     };
 
-    return client.replyMessage(event.replyToken, flexMessage);
+    if (event.replyToken) {
+      return client.replyMessage(event.replyToken, flexMessage);
+    } else {
+      const chatsId = event.source.groupId || event.source.userId;
+      return client.pushMessage(chatsId, flexMessage);
+    }
 
   } catch (error) {
     console.error('Error processing business card image:', error);
@@ -1472,7 +1488,12 @@ Translation Rule: If the text is in simplified Chinese, Arabic, or any language 
       type: 'text',
       text: '❌ Failed to process business card image. Please ensure the image is clear and try again.'
     };
-    return client.replyMessage(event.replyToken, reply);
+    if (event.replyToken) {
+      return client.replyMessage(event.replyToken, reply);
+    } else {
+      const chatsId = event.source.groupId || event.source.userId;
+      return client.pushMessage(chatsId, reply);
+    }
   }
 }
 
@@ -1488,16 +1509,16 @@ async function handleEvent(event) {
 
   const chatsId = event.source.groupId || event.source.userId;
 
-  // Handle image messages (Business Card Scanner - requires /newcontact trigger)
+  // Handle image messages (Business Card Scanner - requires active 15s /newcontact session)
   if (event.message.type === 'image') {
     const hasCaptionCommand = event.message.text && event.message.text.toLowerCase().includes('/newcontact');
-    const hasRecentCommand = await hasRecentNewContactCommand(chatsId);
+    const isSessionActive = await isNewContactSessionActive(chatsId);
 
-    if (hasCaptionCommand || hasRecentCommand) {
-      console.log('Image received with /newcontact trigger. Processing business card...');
+    if (hasCaptionCommand || isSessionActive) {
+      console.log('Image received during active /newcontact window. Processing business card...');
       return processBusinessCardImage(client, event);
     } else {
-      console.log('Image received without /newcontact trigger. Skipping OCR scanner.');
+      console.log('Image received outside /newcontact window. Skipping OCR scanner.');
       return Promise.resolve(null);
     }
   }
@@ -1512,18 +1533,53 @@ async function handleEvent(event) {
 
     // Check for /newcontact command
     if (textLower.startsWith('/newcontact')) {
-      console.log('Processing /newcontact command...');
+      console.log('Processing /newcontact command with 15s window...');
+      const now = Date.now();
+      const expiresAt = now + 15000; // 15 seconds
+
+      // 1. Reply immediately
+      const reply = {
+        type: 'text',
+        text: 'Uploading business card(s) within 15 sec.'
+      };
+      await client.replyMessage(event.replyToken, reply);
+
+      // 2. Save active session in Firestore
+      getDb();
+      await db.collection('chats').doc(chatsId).set({
+        newcontactSession: {
+          active: true,
+          startTime: now,
+          expiresAt: expiresAt
+        }
+      }, { merge: true });
+
+      // Check if an image was uploaded immediately preceding /newcontact
       const recentImageId = await getRecentImageMessageId(chatsId);
       if (recentImageId) {
-        console.log(`Found recent image message ID ${recentImageId} for /newcontact. Processing business card...`);
-        return processBusinessCardImage(client, event, recentImageId);
-      } else {
-        const reply = {
-          type: 'text',
-          text: '🎴 **Business Card Scanner**\n\nPlease send a photo of a business card with **/newcontact** (or send **/newcontact** right after/before sending the photo) to extract contact details and generate a .vcf file!'
-        };
-        return client.replyMessage(event.replyToken, reply);
+        console.log(`Found recent image ID ${recentImageId} for /newcontact. Processing business card...`);
+        await processBusinessCardImage(client, { source: event.source }, recentImageId);
       }
+
+      // 3. Start 15-second timer for timeout response
+      setTimeout(async () => {
+        try {
+          // Deactivate session in Firestore
+          await db.collection('chats').doc(chatsId).set({
+            newcontactSession: { active: false }
+          }, { merge: true });
+
+          console.log(`15s timer expired for /newcontact in chat ${chatsId}. Sending timeout message...`);
+          await client.pushMessage(chatsId, {
+            type: 'text',
+            text: 'Uploading timed out'
+          });
+        } catch (timerErr) {
+          console.error('Error handling /newcontact timeout:', timerErr);
+        }
+      }, 15000);
+
+      return Promise.resolve(null);
     }
 
     // Check if message is a command that starts with "/"
