@@ -573,4 +573,6 @@ if (require.main === module) {
   }
 }
 
-module.exports = { createMcpServer, SSEServerTransport };
+const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
+
+module.exports = { createMcpServer, SSEServerTransport, StreamableHTTPServerTransport };

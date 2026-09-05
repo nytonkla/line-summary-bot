@@ -7,7 +7,7 @@ const cors = require('cors');
 const line = require('@line/bot-sdk');
 const admin = require('firebase-admin');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { createMcpServer, SSEServerTransport } = require('./mcp-server');
+const { createMcpServer, SSEServerTransport, StreamableHTTPServerTransport } = require('./mcp-server');
 
 // Initialize Firebase Admin SDK
 console.log('Initializing Firebase...');
@@ -617,20 +617,20 @@ app.post('/mcp/messages', mcpAuthMiddleware, express.json(), async (req, res) =>
   await transport.handlePostMessage(req, res);
 });
 
-// Streamable HTTP endpoint (Modern MCP Transport: POST /mcp)
-app.post('/mcp', mcpAuthMiddleware, express.json(), async (req, res) => {
-  const sessionId = req.query.sessionId;
-  if (sessionId && sseTransports.has(sessionId)) {
-    const transport = sseTransports.get(sessionId);
-    return await transport.handlePostMessage(req, res);
-  }
-  
-  // Fallback/Direct Streamable response
+// Streamable HTTP transport (Official modern MCP Transport)
+const streamableTransport = new StreamableHTTPServerTransport({
+  sessionIdGenerator: undefined,
+  enableJsonResponse: true
+});
+const streamableMcpServer = createMcpServer(db, client, model);
+streamableMcpServer.connect(streamableTransport);
+
+// Streamable HTTP endpoint: handles both GET and POST on /mcp
+app.all('/mcp', mcpAuthMiddleware, express.json(), async (req, res) => {
   try {
-    const transport = new SSEServerTransport('/mcp/messages', res);
-    await mcpServer.connect(transport);
-    await transport.handlePostMessage(req, res);
+    await streamableTransport.handleRequest(req, res, req.body);
   } catch (err) {
+    console.error('MCP Streamable HTTP request error:', err);
     if (!res.headersSent) {
       res.status(500).json({ error: err.message });
     }
