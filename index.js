@@ -480,22 +480,41 @@ const client = new line.Client(config);
 const app = express();
 app.use(cors());
 
-// MCP Authentication Middleware
+// Universal MCP Authentication Middleware
 const mcpAuthMiddleware = (req, res, next) => {
-  const token = process.env.MCP_ACCESS_TOKEN;
-  if (!token) {
+  const expectedToken = process.env.MCP_ACCESS_TOKEN;
+  if (!expectedToken) {
     console.warn('MCP_ACCESS_TOKEN is not configured in environment variable.');
     return res.status(500).json({ error: 'MCP server configuration error: MCP_ACCESS_TOKEN missing.' });
   }
+
+  // 1. Authorization header (Bearer <token> or raw token)
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Unauthorized: Missing or invalid Bearer authorization header.' });
+  if (authHeader) {
+    const tokenVal = authHeader.startsWith('Bearer ') ? authHeader.substring(7).trim() : authHeader.trim();
+    if (tokenVal === expectedToken) return next();
   }
-  const bearerToken = authHeader.substring(7).trim();
-  if (bearerToken !== token) {
-    return res.status(403).json({ error: 'Forbidden: Invalid access token.' });
+
+  // 2. X-API-Key or api-key header
+  const xApiKey = req.headers['x-api-key'] || req.headers['api-key'];
+  if (xApiKey && xApiKey.trim() === expectedToken) {
+    return next();
   }
-  next();
+
+  // 3. Custom 'bearer' header (if header name is 'bearer')
+  const bearerHeader = req.headers['bearer'];
+  if (bearerHeader) {
+    const val = bearerHeader.startsWith('Bearer ') ? bearerHeader.substring(7).trim() : bearerHeader.trim();
+    if (val === expectedToken) return next();
+  }
+
+  // 4. URL query parameter (?token=... or ?apiKey=...)
+  const queryToken = req.query.token || req.query.key || req.query.apiKey;
+  if (queryToken && queryToken.trim() === expectedToken) {
+    return next();
+  }
+
+  return res.status(401).json({ error: 'Unauthorized: Missing or invalid MCP access token.' });
 };
 
 // Initialize MCP Server instance & SSE Transport Map
