@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "line-summary-bot-remote": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sse",
+        "https://YOUR-APP-NAME.onrender.com/mcp/sse",
+        "--headers",
+        "Authorization: Bearer line_mcp_sec_8e29ec43b3954797b527c194973221f8"
+      ]
+    },
+    "line-summary-bot-local": {
+      "command": "node",
+      "args": [
+        "/Users/klatangsuwan/Desktop/line-summary-bot/mcp-server.js"
+      ],
+      "env": {
+        "FIREBASE_DATABASE_URL": "https://356490943869.firebaseio.com",
+        "GEMINI_API_KEY": "YOUR_GEMINI_API_KEY"
+      }
+    }
+  }
+}
