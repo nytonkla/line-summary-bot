@@ -480,6 +480,101 @@ const client = new line.Client(config);
 const app = express();
 app.use(cors());
 
+// --- OAUTH 2.0 FOR CLAUDE DYNAMIC CLIENT REGISTRATION (RFC 7591 / RFC 8414) ---
+const oauthClients = new Map();
+const oauthCodes = new Map();
+
+// 1. Authorization Server Metadata
+app.get('/.well-known/oauth-authorization-server', (req, res) => {
+  const host = `${req.protocol}://${req.get('host')}`;
+  res.json({
+    issuer: host,
+    authorization_endpoint: `${host}/oauth/authorize`,
+    token_endpoint: `${host}/oauth/token`,
+    registration_endpoint: `${host}/oauth/register`,
+    response_types_supported: ['code'],
+    grant_types_supported: ['authorization_code', 'refresh_token'],
+    code_challenge_methods_supported: ['S256', 'plain'],
+    token_endpoint_auth_methods_supported: ['client_secret_post', 'none']
+  });
+});
+
+// 2. Protected Resource Metadata
+app.get('/.well-known/oauth-protected-resource', (req, res) => {
+  const host = `${req.protocol}://${req.get('host')}`;
+  res.json({
+    resource: host,
+    authorization_servers: [host]
+  });
+});
+
+// 3. Dynamic Client Registration (RFC 7591)
+app.post('/oauth/register', express.json(), (req, res) => {
+  const clientId = 'claude_' + Date.now();
+  const clientSecret = 'secret_' + Math.random().toString(36).substring(2);
+  const clientData = {
+    client_id: clientId,
+    client_secret: clientSecret,
+    client_name: req.body.client_name || 'Claude Connector',
+    redirect_uris: req.body.redirect_uris || []
+  };
+  oauthClients.set(clientId, clientData);
+  res.status(201).json(clientData);
+});
+
+// 4. Authorization Endpoint (User approval screen)
+app.get('/oauth/authorize', (req, res) => {
+  const { client_id, redirect_uri, state, response_type } = req.query;
+  const code = 'code_' + Math.random().toString(36).substring(2, 12);
+  oauthCodes.set(code, { client_id, redirect_uri, token: process.env.MCP_ACCESS_TOKEN });
+
+  let redirectTarget = redirect_uri || 'https://claude.ai';
+  try {
+    const url = new URL(redirectTarget);
+    url.searchParams.set('code', code);
+    if (state) url.searchParams.set('state', state);
+    redirectTarget = url.toString();
+  } catch (e) {
+    redirectTarget += (redirectTarget.includes('?') ? '&' : '?') + `code=${code}${state ? `&state=${state}` : ''}`;
+  }
+
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Authorize LINE Summary Bot</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #0f172a; color: white; }
+          .card { background: #1e293b; padding: 2rem; border-radius: 12px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3); max-width: 420px; text-align: center; border: 1px solid #334155; }
+          h2 { margin-top: 0; color: #f8fafc; }
+          p { color: #94a3b8; line-height: 1.5; font-size: 15px; }
+          button { background: #2563eb; color: white; border: none; padding: 12px 24px; border-radius: 8px; font-size: 16px; cursor: pointer; width: 100%; font-weight: 600; margin-top: 1.5rem; transition: background 0.2s; }
+          button:hover { background: #1d4ed8; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h2>Connect LINE Summary Bot</h2>
+          <p>Authorize Claude to connect to your personal LINE Summary Bot agent and access chat summaries and tools?</p>
+          <form method="GET" action="${redirectTarget}">
+            <button type="submit">Approve Connection</button>
+          </form>
+        </div>
+      </body>
+    </html>
+  `);
+});
+
+// 5. Token Exchange Endpoint
+app.post('/oauth/token', express.json(), express.urlencoded({ extended: true }), (req, res) => {
+  res.json({
+    access_token: process.env.MCP_ACCESS_TOKEN,
+    token_type: 'bearer',
+    expires_in: 31536000
+  });
+});
+
 // Universal MCP Authentication Middleware
 const mcpAuthMiddleware = (req, res, next) => {
   const expectedToken = process.env.MCP_ACCESS_TOKEN;
