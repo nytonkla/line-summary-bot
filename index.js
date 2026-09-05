@@ -3,9 +3,11 @@
 // Import the necessary libraries
 require('dotenv').config();
 const express = require('express');
+const cors = require('cors');
 const line = require('@line/bot-sdk');
 const admin = require('firebase-admin');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { createMcpServer, SSEServerTransport } = require('./mcp-server');
 
 // Initialize Firebase Admin SDK
 console.log('Initializing Firebase...');
@@ -476,6 +478,143 @@ const client = new line.Client(config);
 
 // Create an Express application
 const app = express();
+app.use(cors());
+
+// MCP Authentication Middleware
+const mcpAuthMiddleware = (req, res, next) => {
+  const token = process.env.MCP_ACCESS_TOKEN;
+  if (!token) {
+    console.warn('MCP_ACCESS_TOKEN is not configured in environment variable.');
+    return res.status(500).json({ error: 'MCP server configuration error: MCP_ACCESS_TOKEN missing.' });
+  }
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized: Missing or invalid Bearer authorization header.' });
+  }
+  const bearerToken = authHeader.substring(7).trim();
+  if (bearerToken !== token) {
+    return res.status(403).json({ error: 'Forbidden: Invalid access token.' });
+  }
+  next();
+};
+
+// Initialize MCP Server instance & SSE Transport Map
+const mcpServer = createMcpServer(db, client, model);
+const sseTransports = new Map();
+
+// SSE endpoint for Claude Desktop / Mobile connection
+app.get('/mcp/sse', mcpAuthMiddleware, async (req, res) => {
+  console.log('New MCP SSE connection initiated');
+  const transport = new SSEServerTransport('/mcp/messages', res);
+  const sessionId = transport.sessionId;
+  sseTransports.set(sessionId, transport);
+
+  req.on('close', () => {
+    console.log(`MCP SSE connection closed: ${sessionId}`);
+    sseTransports.delete(sessionId);
+  });
+
+  await mcpServer.connect(transport);
+});
+
+// POST endpoint to handle client messages in SSE session
+app.post('/mcp/messages', mcpAuthMiddleware, express.json(), async (req, res) => {
+  const sessionId = req.query.sessionId;
+  const transport = sseTransports.get(sessionId);
+  if (!transport) {
+    return res.status(404).json({ error: `Session not found: ${sessionId}` });
+  }
+  await transport.handlePostMessage(req, res);
+});
+
+// Streamable HTTP endpoint (Modern MCP Transport: POST /mcp)
+app.post('/mcp', mcpAuthMiddleware, express.json(), async (req, res) => {
+  const sessionId = req.query.sessionId;
+  if (sessionId && sseTransports.has(sessionId)) {
+    const transport = sseTransports.get(sessionId);
+    return await transport.handlePostMessage(req, res);
+  }
+  
+  // Fallback/Direct Streamable response
+  try {
+    const transport = new SSEServerTransport('/mcp/messages', res);
+    await mcpServer.connect(transport);
+    await transport.handlePostMessage(req, res);
+  } catch (err) {
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+});
+
+// Scheduled Morning Briefing Push
+async function runMorningBriefingPush() {
+  try {
+    const targetLineId = process.env.MORNING_BRIEF_LINE_ID;
+    if (!targetLineId) {
+      console.log('MORNING_BRIEF_LINE_ID not set. Skipping automated morning push.');
+      return;
+    }
+
+    console.log(`Running automated Morning Briefing push to ${targetLineId}...`);
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const chatsSnapshot = await db.collection('chats').get();
+
+    let allMessages = [];
+    for (const chatDoc of chatsSnapshot.docs) {
+      const chatId = chatDoc.id;
+      const chatData = chatDoc.data();
+      const chatName = chatData.groupName || chatData.name || chatId;
+
+      const msgSnapshot = await db.collection('chats')
+        .doc(chatId)
+        .collection('messages')
+        .where('timestamp', '>=', cutoff)
+        .get();
+
+      msgSnapshot.forEach(doc => {
+        const data = doc.data();
+        if (data.text) {
+          allMessages.push({
+            chatName,
+            sender: data.displayName || data.userId || 'User',
+            text: data.text,
+            time: data.timestamp ? (data.timestamp.toDate ? data.timestamp.toDate().toISOString() : data.timestamp) : ''
+          });
+        }
+      });
+    }
+
+    if (allMessages.length > 0) {
+      const prompt = `You are a personal executive AI assistant preparing a Morning Briefing.
+Analyze the following ${allMessages.length} LINE messages from the last 24 hours:
+
+${JSON.stringify(allMessages, null, 2)}
+
+Provide a concise Executive Morning Briefing in Markdown formatted for a LINE message:
+1. 🚨 **Attention Needed / Urgent Items**
+2. 📌 **Group Highlights**
+3. ✅ **Pending Action Items**`;
+
+      const result = await generateContentWithRetry(prompt);
+      const messages = splitIntoMessages(`🌅 **Good Morning! Executive Daily Briefing**\n\n${result}`);
+      await sendLineMessages(client, null, targetLineId, messages);
+      console.log('Morning Briefing pushed successfully!');
+    } else {
+      console.log('No overnight messages found. Morning briefing push skipped.');
+    }
+  } catch (error) {
+    console.error('Error during morning briefing push:', error);
+  }
+}
+
+// Hourly check for morning briefing time (8:00 AM)
+setInterval(() => {
+  const now = new Date();
+  if (now.getHours() === 8 && now.getMinutes() === 0) {
+    runMorningBriefingPush();
+  }
+}, 60000);
 
 // --- 2. ADD CODE ENDPOINTS ---
 // Endpoint to display cached code data
