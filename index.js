@@ -1016,13 +1016,12 @@ app.get('/debug/webhook', (req, res) => {
 
 app.get('/debug/chats', async (req, res) => {
   try {
-    const snapshot = await db.collection('chats').get();
-    const chats = [];
-    for (const doc of snapshot.docs) {
+    const snapshot = await db.collection('chats').limit(15).get();
+    const chats = await Promise.all(snapshot.docs.map(async (doc) => {
       const data = doc.data();
       let recentMessages = [];
       try {
-        const msgSnap = await doc.ref.collection('messages').orderBy('timestamp', 'desc').limit(5).get();
+        const msgSnap = await doc.ref.collection('messages').orderBy('timestamp', 'desc').limit(3).get();
         recentMessages = msgSnap.docs.map(d => ({
           id: d.id,
           text: d.data().text,
@@ -1031,14 +1030,14 @@ app.get('/debug/chats', async (req, res) => {
           time: d.data().timestamp ? (d.data().timestamp.toDate ? d.data().timestamp.toDate().toISOString() : d.data().timestamp) : null
         }));
       } catch (e) {}
-      chats.push({
+      return {
         id: doc.id,
         groupName: data.groupName || data.name || 'Unnamed',
         chatsType: data.chatsType,
         lastActivity: data.lastActivity ? (data.lastActivity.toDate ? data.lastActivity.toDate().toISOString() : data.lastActivity) : null,
         recentMessages
-      });
-    }
+      };
+    }));
     res.json({ total: chats.length, chats });
   } catch (err) {
     res.status(500).json({ error: err.message });
