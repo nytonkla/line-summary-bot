@@ -557,6 +557,189 @@ Provide a concise, high-level Executive Morning Briefing in Markdown:
     }
   );
 
+  // -------------------------------------------------------------
+  // Tool 11: get_chat_image
+  // -------------------------------------------------------------
+  server.tool(
+    'get_chat_image',
+    'Downloads and displays an image sent in a LINE chat so Claude can visually inspect, read, or analyze it.',
+    {
+      imageId: z.string().describe('ID of the image message to view')
+    },
+    async ({ imageId }) => {
+      try {
+        const imageDoc = await db.collection('chat_images').doc(imageId).get();
+        if (!imageDoc.exists) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Image record not found for ID: ${imageId}` }]
+          };
+        }
+
+        const data = imageDoc.data();
+        let base64Data = data.base64Thumb;
+
+        if (!base64Data && data.storagePath) {
+          const bucketName = process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.appspot.com';
+          let bucket;
+          try {
+            bucket = admin.storage().bucket(bucketName);
+          } catch (e) {
+            bucket = admin.storage().bucket();
+          }
+          const file = bucket.file(data.storagePath);
+          const [fileBuffer] = await file.download();
+          base64Data = fileBuffer.toString('base64');
+        }
+
+        if (!base64Data) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Image data is no longer available in storage for image ID: ${imageId} (Summary: ${data.summary || 'N/A'})` }]
+          };
+        }
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `📷 Image ID: ${imageId}\nSender: ${data.senderName || 'Unknown'}\nChat: ${data.chatName || data.chatId || 'LINE Chat'}\nSummary: ${data.summary || 'N/A'}\nImportant: ${data.isImportant ? 'Yes ⭐' : 'No'}`
+            },
+            {
+              type: 'image',
+              data: base64Data,
+              mimeType: 'image/jpeg'
+            }
+          ]
+        };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Failed to retrieve image: ${error.message}` }]
+        };
+      }
+    }
+  );
+
+  // -------------------------------------------------------------
+  // Tool 12: mark_image_important
+  // -------------------------------------------------------------
+  server.tool(
+    'mark_image_important',
+    'Tags an image as important (or un-marks it) to prevent it from ever being deleted by automated storage cleanup routines.',
+    {
+      imageId: z.string().describe('ID of the image message'),
+      isImportant: z.boolean().default(true).describe('True to protect from cleanup, false to allow cleanup'),
+      notes: z.string().optional().describe('Why this image is important (e.g. "Tax receipt", "Architecture diagram")')
+    },
+    async ({ imageId, isImportant, notes }) => {
+      try {
+        const updateData = {
+          isImportant,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        };
+        if (notes) updateData.notes = notes;
+
+        await db.collection('chat_images').doc(imageId).set(updateData, { merge: true });
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({ success: true, imageId, isImportant, notes: notes || null }, null, 2)
+            }
+          ]
+        };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Failed to mark image: ${error.message}` }]
+        };
+      }
+    }
+  );
+
+  // -------------------------------------------------------------
+  // Tool 13: cleanup_old_images
+  // -------------------------------------------------------------
+  server.tool(
+    'cleanup_old_images',
+    'Cleans up non-important images from storage older than N days (keeps text summaries in chat history).',
+    {
+      daysOld: z.number().optional().default(7).describe('Delete images older than this many days (default: 7)'),
+      dryRun: z.boolean().optional().default(false).describe('If true, previews images that would be deleted without actually deleting them')
+    },
+    async ({ daysOld, dryRun }) => {
+      try {
+        const cutoff = new Date(Date.now() - daysOld * 24 * 60 * 60 * 1000);
+        const snapshot = await db.collection('chat_images')
+          .where('timestamp', '<=', cutoff)
+          .get();
+
+        const bucketName = process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.appspot.com';
+        let bucket;
+        try {
+          bucket = admin.storage().bucket(bucketName);
+        } catch (e) {
+          bucket = admin.storage().bucket();
+        }
+
+        const candidates = [];
+        let deletedCount = 0;
+
+        for (const doc of snapshot.docs) {
+          const data = doc.data();
+          if (data.isImportant === true || data.deletedFromStorage === true) {
+            continue;
+          }
+
+          candidates.push({
+            imageId: doc.id,
+            summary: data.summary,
+            chatName: data.chatName,
+            timestamp: data.timestamp ? (data.timestamp.toDate ? data.timestamp.toDate().toISOString() : data.timestamp) : null
+          });
+
+          if (!dryRun) {
+            if (data.storagePath) {
+              try {
+                await bucket.file(data.storagePath).delete({ ignoreNotFound: true });
+              } catch (delErr) {
+                console.warn(`Could not delete storage file ${data.storagePath}:`, delErr.message);
+              }
+            }
+            await doc.ref.update({
+              deletedFromStorage: true,
+              base64Thumb: admin.firestore.FieldValue.delete(),
+              deletedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+            deletedCount++;
+          }
+        }
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                dryRun,
+                daysThreshold: daysOld,
+                totalEligible: candidates.length,
+                deletedCount: dryRun ? 0 : deletedCount,
+                images: candidates
+              }, null, 2)
+            }
+          ]
+        };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Failed to cleanup images: ${error.message}` }]
+        };
+      }
+    }
+  );
+
   return server;
 }
 

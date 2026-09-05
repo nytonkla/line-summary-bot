@@ -706,6 +706,55 @@ setInterval(() => {
   }
 }, 60000);
 
+// Scheduled Daily Storage Cleanup (3:00 AM daily - removes non-important images older than 7 days)
+async function runDailyImageCleanup() {
+  try {
+    console.log('Running daily cleanup of old non-important images...');
+    const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // 7 days
+    const snapshot = await db.collection('chat_images')
+      .where('timestamp', '<=', cutoff)
+      .get();
+
+    const bucketName = process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.appspot.com';
+    let bucket;
+    try {
+      bucket = admin.storage().bucket(bucketName);
+    } catch (e) {
+      bucket = admin.storage().bucket();
+    }
+
+    let count = 0;
+    for (const doc of snapshot.docs) {
+      const data = doc.data();
+      if (data.isImportant === true || data.deletedFromStorage === true) {
+        continue;
+      }
+      if (data.storagePath) {
+        try {
+          await bucket.file(data.storagePath).delete({ ignoreNotFound: true });
+        } catch (e) {}
+      }
+      await doc.ref.update({
+        deletedFromStorage: true,
+        base64Thumb: admin.firestore.FieldValue.delete(),
+        deletedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+      count++;
+    }
+    console.log(`Daily image cleanup completed. Cleaned ${count} images.`);
+  } catch (err) {
+    console.error('Error during daily image cleanup:', err);
+  }
+}
+
+// Check every minute if it is 3:00 AM for image cleanup
+setInterval(() => {
+  const now = new Date();
+  if (now.getHours() === 3 && now.getMinutes() === 0) {
+    runDailyImageCleanup();
+  }
+}, 60000);
+
 // --- 2. ADD CODE ENDPOINTS ---
 // Endpoint to display cached code data
 app.get('/code', async (req, res) => {
@@ -1345,6 +1394,131 @@ Translation Rule: If the text is in simplified Chinese, Arabic, or any language 
   }
 }
 
+// Process general chat images (Hybrid pipeline: Gemini vision captioning + Storage + Firestore indexing)
+async function processChatImage(client, event) {
+  try {
+    const messageId = event.message.id;
+    const chatsId = event.source.groupId || event.source.userId;
+    const chatsType = event.source.groupId ? 'group' : 'user';
+
+    console.log(`Processing hybrid image message ID: ${messageId} in ${chatsType} ${chatsId}`);
+
+    // Get user profile & group name
+    let displayName = 'Unknown User';
+    let groupName = null;
+    try {
+      if (chatsType === 'group') {
+        try {
+          const profile = await client.getGroupMemberProfile(event.source.groupId, event.source.userId);
+          displayName = profile.displayName;
+        } catch (e) {}
+        try {
+          const groupSummary = await client.getGroupSummary(event.source.groupId);
+          groupName = groupSummary.groupName;
+        } catch (e) {
+          groupName = 'Unknown Group';
+        }
+      } else {
+        try {
+          const profile = await client.getProfile(event.source.userId);
+          displayName = profile.displayName;
+        } catch (e) {}
+      }
+    } catch (e) {}
+
+    // 1. Download image stream from LINE
+    const stream = await client.getMessageContent(messageId);
+    const imageBuffer = await streamToBuffer(stream);
+
+    // 2. Fast Concise Vision Summary with Gemini
+    let imageSummary = 'Photo / Image attachment';
+    try {
+      const imagePart = {
+        inlineData: {
+          data: imageBuffer.toString('base64'),
+          mimeType: 'image/jpeg',
+        },
+      };
+      const prompt = 'Describe this image concisely in 1-2 sentences for a chat log. If there are visible text, numbers, receipts, errors, slips, or charts, mention them specifically.';
+      await geminiRateLimiter.waitForSlot();
+      const result = await model.generateContent([prompt, imagePart]);
+      const res = await result.response;
+      imageSummary = res.text().trim();
+    } catch (visionErr) {
+      console.warn('Gemini vision captioning warning:', visionErr.message);
+    }
+
+    // 3. Save Image to Firebase Storage
+    const storagePath = `chat_images/${chatsId}/${messageId}.jpg`;
+    let storageSaved = false;
+    try {
+      const bucketName = process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.appspot.com';
+      let bucket;
+      try {
+        bucket = admin.storage().bucket(bucketName);
+      } catch (e) {
+        bucket = admin.storage().bucket();
+      }
+      await bucket.file(storagePath).save(imageBuffer, {
+        contentType: 'image/jpeg',
+        metadata: { contentType: 'image/jpeg' }
+      });
+      storageSaved = true;
+      console.log(`Image saved to Firebase Storage at ${storagePath}`);
+    } catch (storageErr) {
+      console.warn('Firebase Storage upload warning:', storageErr.message);
+    }
+
+    // Save image metadata into 'chat_images' collection
+    // If under 900KB, also save base64 directly in doc for instant retrieval by Claude
+    const base64Thumb = imageBuffer.length < 900000 ? imageBuffer.toString('base64') : null;
+    await db.collection('chat_images').doc(messageId).set({
+      imageId: messageId,
+      chatId: chatsId,
+      chatName: groupName || displayName,
+      senderId: event.source.userId,
+      senderName: displayName,
+      summary: imageSummary,
+      storagePath: storageSaved ? storagePath : null,
+      base64Thumb: base64Thumb,
+      isImportant: false,
+      deletedFromStorage: false,
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    // 4. Save message into chats/{chatsId}/messages so Claude can read and search without downloading
+    const chatDocRef = db.collection('chats').doc(chatsId);
+    await chatDocRef.set({
+      chatsId: chatsId,
+      chatsType: chatsType,
+      groupName: groupName,
+      lastActivity: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    const messageData = {
+      messageId: messageId,
+      messageType: 'image',
+      imageId: messageId,
+      text: `📷 [Image: ${imageSummary}] (Image ID: ${messageId})`,
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      eventType: event.type,
+      userId: event.source.userId,
+      displayName: displayName,
+      groupName: groupName,
+      chatsId: chatsId,
+      chatsType: chatsType
+    };
+
+    await chatDocRef.collection('messages').add(messageData);
+    console.log(`Saved image message with summary to Firestore for ${chatsType} from ${displayName}: ${imageSummary}`);
+
+    return Promise.resolve(null);
+  } catch (error) {
+    console.error('Error in processChatImage:', error);
+    return Promise.resolve(null);
+  }
+}
+
 // --- 3. DEFINE THE EVENT HANDLER ---
 // This function handles the incoming messages
 async function handleEvent(event) {
@@ -1352,12 +1526,9 @@ async function handleEvent(event) {
     return Promise.resolve(null);
   }
 
-  // Save message to database first
-  await saveMessageToDatabase(event, client);
-
   const chatsId = event.source.groupId || event.source.userId;
 
-  // Handle image messages (Business Card Scanner - requires active 15s /newcontact session)
+  // Handle image messages
   if (event.message.type === 'image') {
     const hasCaptionCommand = event.message.text && event.message.text.toLowerCase().includes('/newcontact');
     const isSessionActive = await isNewContactSessionActive(chatsId);
@@ -1366,8 +1537,8 @@ async function handleEvent(event) {
       console.log('Image received during active /newcontact window. Processing business card...');
       return processBusinessCardImage(client, event);
     } else {
-      console.log('Image received outside /newcontact window. Skipping OCR scanner.');
-      return Promise.resolve(null);
+      console.log('Image received in chat. Processing hybrid image pipeline...');
+      return processChatImage(client, event);
     }
   }
 

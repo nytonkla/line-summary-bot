@@ -82,6 +82,9 @@ Once connected, Claude will automatically gain access to 10 powerful tools:
 | `search_memories` | Memory | Query stored project facts, decisions, and long-term memories. |
 | `get_bot_rules` | Rules | Read current auto-response rules and confidence mode. |
 | `set_bot_rule` | Rules | Update response permissions (toggle between `drafting` and `autonomous` mode). |
+| `get_chat_image` | Vision | Downloads and renders an image sent in LINE directly in Claude for visual inspection. |
+| `mark_image_important` | Storage | Tags an image as important (receipt, diagram) to protect it from automated cleanup. |
+| `cleanup_old_images` | Storage | Cleans up non-important images older than N days while preserving text summaries. |
 
 ---
 
