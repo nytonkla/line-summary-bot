@@ -17,11 +17,11 @@ function getDb() {
         const serviceAccount = require('./serviceAccountKey.json');
         admin.initializeApp({
           credential: admin.credential.cert(serviceAccount),
-          storageBucket: process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.firebasestorage.app'
+          storageBucket: process.env.STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.firebasestorage.app'
         });
       } catch (e) {
         admin.initializeApp({
-          storageBucket: process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.firebasestorage.app'
+          storageBucket: process.env.STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.firebasestorage.app'
         });
       }
     }
@@ -1056,6 +1056,7 @@ app.all('/mcp', mcpAuthMiddleware, express.json(), async (req, res) => {
 // Storage Health Check & Diagnostic Endpoint
 app.get('/health/storage', async (req, res) => {
   const candidateBuckets = [
+    process.env.STORAGE_BUCKET,
     process.env.FIREBASE_STORAGE_BUCKET,
     'line-bot-sumarizer.firebasestorage.app',
     'line-bot-sumarizer.appspot.com'
@@ -1094,7 +1095,7 @@ app.get('/health/storage', async (req, res) => {
 
   const result = {
     timestamp: new Date().toISOString(),
-    configuredBucket: process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.firebasestorage.app',
+    configuredBucket: process.env.STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.firebasestorage.app',
     allProjectBuckets,
     testedBuckets
   };
@@ -1544,7 +1545,7 @@ async function getRecentImageMessageId(chatsId) {
 let resolvedBucket = null;
 async function resolveStorageBucket() {
   if (resolvedBucket) return resolvedBucket;
-  const preferred = process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.firebasestorage.app';
+  const preferred = process.env.STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.firebasestorage.app';
   getDb(); // Ensure admin SDK is initialized
 
   try {

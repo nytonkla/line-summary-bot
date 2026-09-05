@@ -15,6 +15,7 @@ async function resolveStorageBucket() {
   if (cachedMcpBucket) return cachedMcpBucket;
 
   const candidates = [
+    process.env.STORAGE_BUCKET,
     process.env.FIREBASE_STORAGE_BUCKET,
     'line-bot-sumarizer.firebasestorage.app',
     'line-bot-sumarizer.appspot.com'
