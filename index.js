@@ -961,6 +961,45 @@ app.get('/health/storage', async (req, res) => {
   res.json(result);
 });
 
+// Test endpoint for attention items query
+app.get('/test-attention', async (req, res) => {
+  try {
+    const hoursBack = parseInt(req.query.hoursBack) || 72;
+    const cutoff = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
+    const chatsSnapshot = await db.collection('chats').limit(20).get();
+    const attentionItems = [];
+    const questionRegex = /\?|ช่วย|รบกวน|ด่วน|urgent|please|how|what|when|where|why|can you/i;
+
+    for (const chatDoc of chatsSnapshot.docs) {
+      const chatId = chatDoc.id;
+      const chatName = chatDoc.data().groupName || chatDoc.data().name || chatId;
+      const msgSnapshot = await db.collection('chats')
+        .doc(chatId)
+        .collection('messages')
+        .where('timestamp', '>=', cutoff)
+        .limit(100)
+        .get();
+
+      msgSnapshot.forEach(doc => {
+        const data = doc.data();
+        const text = data.text || '';
+        if (questionRegex.test(text)) {
+          attentionItems.push({
+            id: doc.id,
+            chatId,
+            chatName,
+            sender: data.displayName || data.userId || 'User',
+            text
+          });
+        }
+      });
+    }
+    res.json({ success: true, count: attentionItems.length, items: attentionItems });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message, stack: err.stack });
+  }
+});
+
 // --- 3.5. ADD MESSAGES ENDPOINT ---
 // Optional endpoint to get recent messages (when specifically requested)
 app.get('/messages', async (req, res) => {
