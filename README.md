@@ -14,57 +14,53 @@ A LINE bot that integrates with Firebase for message storage and Google Gemini A
 
 - `/summarize` - Generates an AI summary of the last 20 messages in the conversation
 
-## Deployment on Render
+## Deployment on Firebase Cloud Functions
 
 ### Prerequisites
 
-1. GitHub repository with your code
-2. LINE Bot channel with webhook URL
-3. Firebase project with Firestore enabled
-4. Google AI Studio API key
+1. Firebase project (`line-bot-sumarizer`) with Firestore & Storage enabled
+2. LINE Bot channel with Messaging API enabled
+3. Google AI Studio API key (Gemini 1.5 Flash)
+4. Firebase CLI installed (`npm install -g firebase-tools`)
 
 ### Steps to Deploy
 
-1. **Fork/Clone this repository** to your GitHub account
-
-2. **Create a new Web Service on Render:**
-   - Go to [Render Dashboard](https://dashboard.render.com)
-   - Click "New +" → "Web Service"
-   - Connect your GitHub repository
-   - Choose the repository: `line-summary-bot`
-
-3. **Configure the service:**
-   - **Name**: `line-summary-bot`
-   - **Environment**: `Node`
-   - **Build Command**: `npm install`
-   - **Start Command**: `npm start`
-   - **Plan**: Free (or upgrade as needed)
-
-4. **Set Environment Variables:**
-   Add these environment variables in Render dashboard:
+1. **Install dependencies:**
+   ```bash
+   cd functions
+   npm install
    ```
+
+2. **Configure Environment Variables:**
+   Ensure `functions/.env` contains your API keys:
+   ```env
    CHANNEL_ACCESS_TOKEN=your_line_channel_access_token
    CHANNEL_SECRET=your_line_channel_secret
    GEMINI_API_KEY=your_gemini_api_key
-   FIREBASE_PROJECT_ID=your_firebase_project_id
-   FIREBASE_DATABASE_URL=https://your-project-id.firebaseio.com
+   FIREBASE_STORAGE_BUCKET=line-bot-sumarizer.firebasestorage.app
+   MCP_ACCESS_TOKEN=your_mcp_access_token
    ```
 
-5. **Upload Firebase Service Account Key:**
-   - In Render dashboard, go to your service
-   - Navigate to "Environment" tab
-   - Upload your `serviceAccountKey.json` file
-   - Or set the content as an environment variable
+3. **Deploy to Firebase:**
+   ```bash
+   cd functions
+   npx firebase deploy --only functions
+   ```
 
-6. **Deploy:**
-   - Click "Create Web Service"
-   - Wait for deployment to complete
-   - Note the provided URL (e.g., `https://your-app.onrender.com`)
+4. **Configure LINE Webhook:**
+   - Go to [LINE Developers Console](https://developers.line.biz/console/)
+   - Set **Webhook URL** to:
+     ```
+     https://us-central1-line-bot-sumarizer.cloudfunctions.net/lineSummaryBot/webhook
+     ```
+   - Enable **Use webhook** (toggle to ON)
+   - Click **Verify** to test connection
 
-7. **Configure LINE Webhook:**
-   - Go to LINE Developers Console
-   - Set webhook URL to: `https://your-app.onrender.com/webhook`
-   - Enable webhook
+5. **Connect Claude (MCP):**
+   - Connect Claude Desktop or Claude Mobile to:
+     ```
+     https://us-central1-line-bot-sumarizer.cloudfunctions.net/lineSummaryBot/mcp
+     ```
 
 ## Local Development
 
@@ -95,10 +91,12 @@ A LINE bot that integrates with Firebase for message storage and Google Gemini A
 
 ```
 line-summary-bot/
-├── index.js              # Main bot application
-├── package.json          # Dependencies and scripts
-├── render.yaml           # Render deployment configuration
-├── Dockerfile            # Docker configuration
+├── functions/            # Firebase Cloud Functions (v2)
+│   ├── index.js          # Webhook, Gemini Vision, Storage & API routes
+│   ├── mcp-server.js     # Claude Model Context Protocol server (14 tools)
+│   └── package.json      # Functions dependencies
+├── index.js              # Local development server
+├── package.json          # Workspace dependencies
 ├── .gitignore           # Git ignore rules
 ├── .env.example         # Environment variables template
 └── README.md            # This file

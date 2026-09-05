@@ -31,7 +31,7 @@ Add the following snippet to your `claude_desktop_config.json` (located at `~/Li
       "args": [
         "-y",
         "@modelcontextprotocol/server-sse",
-        "https://YOUR-APP-NAME.onrender.com/mcp/sse",
+        "https://us-central1-line-bot-sumarizer.cloudfunctions.net/lineSummaryBot/mcp/sse",
         "--headers",
         "Authorization: Bearer line_mcp_sec_8e29ec43b3954797b527c194973221f8"
       ]
@@ -47,7 +47,7 @@ Add the following snippet to your `claude_desktop_config.json` (located at `~/Li
     "line-bot-local": {
       "command": "node",
       "args": [
-        "/Users/klatangsuwan/Desktop/line-summary-bot/mcp-server.js"
+        "/Users/klatangsuwan/Desktop/line-summary-bot/functions/mcp-server.js"
       ]
     }
   }
@@ -59,9 +59,10 @@ Add the following snippet to your `claude_desktop_config.json` (located at `~/Li
 ## 📱 2. Connecting Claude Mobile / Web
 
 To connect from Claude Mobile or Claude Web on your account:
-1. Ensure your bot is deployed on Render/Cloud with `MCP_ACCESS_TOKEN` set.
+1. Ensure your bot is deployed on Firebase Cloud Functions with `MCP_ACCESS_TOKEN` set.
 2. In Claude (Mobile/Web), add a Custom MCP SSE connector:
-   - **SSE Endpoint URL**: `https://YOUR-APP-NAME.onrender.com/mcp/sse`
+   - **Streamable HTTP Endpoint URL**: `https://us-central1-line-bot-sumarizer.cloudfunctions.net/lineSummaryBot/mcp`
+   - **SSE Endpoint URL**: `https://us-central1-line-bot-sumarizer.cloudfunctions.net/lineSummaryBot/mcp/sse`
    - **Header**: `Authorization: Bearer line_mcp_sec_8e29ec43b3954797b527c194973221f8`
 
 ---
@@ -94,7 +95,7 @@ Once connected, Claude will automatically gain access to 10 powerful tools:
 To receive an automated Executive Morning Briefing in your personal LINE chat every morning at 8:00 AM:
 
 1. Obtain your personal LINE User ID (or target Group ID).
-2. Set the environment variable in `.env` or Render Dashboard:
+2. Set the environment variable in `functions/.env`:
    ```env
    MORNING_BRIEF_LINE_ID=U1234567890abcdef...
    ```

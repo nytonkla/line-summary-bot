@@ -5,7 +5,7 @@
       "args": [
         "-y",
         "@modelcontextprotocol/server-sse",
-        "https://YOUR-APP-NAME.onrender.com/mcp/sse",
+        "https://us-central1-line-bot-sumarizer.cloudfunctions.net/lineSummaryBot/mcp/sse",
         "--headers",
         "Authorization: Bearer line_mcp_sec_8e29ec43b3954797b527c194973221f8"
       ]

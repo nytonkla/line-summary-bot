@@ -3,8 +3,10 @@
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
 const express = require('express');
+const cors = require('cors');
 const line = require('@line/bot-sdk');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { createMcpServer, SSEServerTransport, StreamableHTTPServerTransport } = require('./mcp-server');
 
 // Initialize Firebase Admin SDK lazily
 let dbInstance = null;
@@ -846,6 +848,399 @@ if (process.env.CHANNEL_ACCESS_TOKEN && process.env.CHANNEL_SECRET) {
 
 // Create an Express application
 const app = express();
+app.use(cors());
+
+// In-memory debug logger for webhook events
+const recentWebhookLogs = [];
+function logWebhook(item) {
+  recentWebhookLogs.unshift({
+    time: new Date().toISOString(),
+    ...item
+  });
+  if (recentWebhookLogs.length > 50) recentWebhookLogs.pop();
+}
+
+// Root endpoint with service manifest
+app.get('/', async (req, res) => {
+  res.json({
+    status: 'online',
+    service: 'line-summary-bot',
+    platform: 'firebase-functions-v2',
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      webhook: '/webhook',
+      mcp: '/mcp',
+      mcp_sse: '/mcp/sse',
+      storage_health: '/health/storage',
+      debug_webhook: '/debug/webhook',
+      debug_chats: '/debug/chats',
+      test_attention: '/test-attention',
+      code: '/code'
+    }
+  });
+});
+
+// --- OAUTH 2.0 FOR CLAUDE DYNAMIC CLIENT REGISTRATION (RFC 7591 / RFC 8414) ---
+const oauthClients = new Map();
+const oauthCodes = new Map();
+
+function getOAuthHost(req) {
+  const basePath = req.originalUrl && req.originalUrl.startsWith('/lineSummaryBot') ? '/lineSummaryBot' : '';
+  return `${req.protocol}://${req.get('host')}${basePath}`;
+}
+
+// 1. Authorization Server Metadata
+app.get('/.well-known/oauth-authorization-server', (req, res) => {
+  const host = getOAuthHost(req);
+  res.json({
+    issuer: host,
+    authorization_endpoint: `${host}/oauth/authorize`,
+    token_endpoint: `${host}/oauth/token`,
+    registration_endpoint: `${host}/oauth/register`,
+    response_types_supported: ['code'],
+    grant_types_supported: ['authorization_code', 'refresh_token'],
+    code_challenge_methods_supported: ['S256', 'plain'],
+    token_endpoint_auth_methods_supported: ['client_secret_post', 'none']
+  });
+});
+
+// 2. Protected Resource Metadata
+app.get('/.well-known/oauth-protected-resource', (req, res) => {
+  const host = getOAuthHost(req);
+  res.json({
+    resource: host,
+    authorization_servers: [host]
+  });
+});
+
+// 3. Dynamic Client Registration (RFC 7591)
+app.post('/oauth/register', express.json(), (req, res) => {
+  const clientId = 'claude_' + Date.now();
+  const clientSecret = 'secret_' + Math.random().toString(36).substring(2);
+  const clientData = {
+    client_id: clientId,
+    client_secret: clientSecret,
+    client_name: req.body.client_name || 'Claude Connector',
+    redirect_uris: req.body.redirect_uris || []
+  };
+  oauthClients.set(clientId, clientData);
+  res.status(201).json(clientData);
+});
+
+// 4. Authorization Endpoint (Immediate redirect with code and state preserved)
+app.get('/oauth/authorize', (req, res) => {
+  const { client_id, redirect_uri, state } = req.query;
+  const code = 'code_' + Math.random().toString(36).substring(2, 12);
+  oauthCodes.set(code, { client_id, redirect_uri, token: process.env.MCP_ACCESS_TOKEN });
+
+  let redirectTarget = redirect_uri || 'https://claude.ai';
+  try {
+    const url = new URL(redirectTarget);
+    url.searchParams.set('code', code);
+    if (state) url.searchParams.set('state', state);
+    redirectTarget = url.toString();
+  } catch (e) {
+    redirectTarget += (redirectTarget.includes('?') ? '&' : '?') + `code=${code}${state ? `&state=${state}` : ''}`;
+  }
+
+  console.log('OAuth authorize redirecting to:', redirectTarget);
+  res.redirect(redirectTarget);
+});
+
+// 5. Token Exchange Endpoint
+app.post('/oauth/token', express.json(), express.urlencoded({ extended: true }), (req, res) => {
+  res.json({
+    access_token: process.env.MCP_ACCESS_TOKEN,
+    token_type: 'bearer',
+    expires_in: 31536000
+  });
+});
+
+// Universal MCP Authentication Middleware
+const mcpAuthMiddleware = (req, res, next) => {
+  const expectedToken = process.env.MCP_ACCESS_TOKEN;
+  if (!expectedToken) {
+    console.warn('MCP_ACCESS_TOKEN is not configured in environment variable.');
+    return res.status(500).json({ error: 'MCP server configuration error: MCP_ACCESS_TOKEN missing.' });
+  }
+
+  // 1. Authorization header (Bearer <token> or raw token)
+  const authHeader = req.headers.authorization;
+  if (authHeader) {
+    const tokenVal = authHeader.startsWith('Bearer ') ? authHeader.substring(7).trim() : authHeader.trim();
+    if (tokenVal === expectedToken) return next();
+  }
+
+  // 2. X-API-Key or api-key header
+  const xApiKey = req.headers['x-api-key'] || req.headers['api-key'];
+  if (xApiKey && xApiKey.trim() === expectedToken) {
+    return next();
+  }
+
+  // 3. Custom 'bearer' header
+  const bearerHeader = req.headers['bearer'];
+  if (bearerHeader) {
+    const val = bearerHeader.startsWith('Bearer ') ? bearerHeader.substring(7).trim() : bearerHeader.trim();
+    if (val === expectedToken) return next();
+  }
+
+  // 4. URL query parameter (?token=... or ?apiKey=...)
+  const queryToken = req.query.token || req.query.key || req.query.apiKey;
+  if (queryToken && queryToken.trim() === expectedToken) {
+    return next();
+  }
+
+  return res.status(401).json({ error: 'Unauthorized: Missing or invalid MCP access token.' });
+};
+
+// Initialize MCP Server instance & SSE Transport Map lazily
+let mcpServerInstance = null;
+let streamableMcpServerInstance = null;
+let streamableTransportInstance = null;
+const sseTransports = new Map();
+
+function initMcp() {
+  if (!mcpServerInstance) {
+    const database = getDb();
+    const genModel = getModel();
+    mcpServerInstance = createMcpServer(database, client, genModel);
+
+    streamableTransportInstance = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true
+    });
+    streamableMcpServerInstance = createMcpServer(database, client, genModel);
+    streamableMcpServerInstance.connect(streamableTransportInstance);
+  }
+}
+
+// SSE endpoint for Claude Desktop / Mobile connection
+app.get('/mcp/sse', mcpAuthMiddleware, async (req, res) => {
+  initMcp();
+  console.log('New MCP SSE connection initiated');
+  const transport = new SSEServerTransport('/mcp/messages', res);
+  const sessionId = transport.sessionId;
+  sseTransports.set(sessionId, transport);
+
+  req.on('close', () => {
+    console.log(`MCP SSE connection closed: ${sessionId}`);
+    sseTransports.delete(sessionId);
+  });
+
+  await mcpServerInstance.connect(transport);
+});
+
+// POST endpoint to handle client messages in SSE session
+app.post('/mcp/messages', mcpAuthMiddleware, express.json(), async (req, res) => {
+  const sessionId = req.query.sessionId;
+  const transport = sseTransports.get(sessionId);
+  if (!transport) {
+    return res.status(404).json({ error: `Session not found: ${sessionId}` });
+  }
+  await transport.handlePostMessage(req, res);
+});
+
+// Streamable HTTP endpoint: handles both GET and POST on /mcp
+app.all('/mcp', mcpAuthMiddleware, express.json(), async (req, res) => {
+  try {
+    initMcp();
+    await streamableTransportInstance.handleRequest(req, res, req.body);
+  } catch (err) {
+    console.error('MCP Streamable HTTP request error:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+});
+
+// Storage Health Check & Diagnostic Endpoint
+app.get('/health/storage', async (req, res) => {
+  const candidateBuckets = [
+    process.env.FIREBASE_STORAGE_BUCKET,
+    'line-bot-sumarizer.firebasestorage.app',
+    'line-bot-sumarizer.appspot.com'
+  ].filter(Boolean);
+
+  const uniqueBuckets = [...new Set(candidateBuckets)];
+  const testedBuckets = [];
+  let workingBucket = null;
+
+  for (const bName of uniqueBuckets) {
+    const info = { name: bName, exists: false };
+    try {
+      const b = admin.storage().bucket(bName);
+      const [exists] = await b.exists();
+      info.exists = exists;
+      if (exists && !workingBucket) {
+        workingBucket = b;
+      }
+    } catch (err) {
+      info.error = err.message;
+    }
+    testedBuckets.push(info);
+  }
+
+  let allProjectBuckets = [];
+  try {
+    const [buckets] = await admin.storage().bucket('temp').storage.getBuckets();
+    allProjectBuckets = buckets.map(b => b.name);
+    if (!workingBucket && allProjectBuckets.length > 0) {
+      const preferred = allProjectBuckets.find(b => b.includes('line-bot-sumarizer.firebasestorage.app')) || allProjectBuckets[0];
+      workingBucket = admin.storage().bucket(preferred);
+    }
+  } catch (err) {
+    allProjectBuckets = [`Error listing buckets: ${err.message}`];
+  }
+
+  const result = {
+    timestamp: new Date().toISOString(),
+    configuredBucket: process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.firebasestorage.app',
+    allProjectBuckets,
+    testedBuckets
+  };
+
+  if (workingBucket) {
+    result.activeBucket = workingBucket.name;
+    try {
+      const testFile = workingBucket.file('_health_check/test.txt');
+      await testFile.save(`Health check at ${new Date().toISOString()}`, { contentType: 'text/plain' });
+      result.writeTest = 'PASSED ✅';
+
+      const [buf] = await testFile.download();
+      result.readTest = `PASSED ✅ (${buf.toString()})`;
+
+      await testFile.delete({ ignoreNotFound: true });
+      result.deleteTest = 'PASSED ✅';
+
+      const [files] = await workingBucket.getFiles({ prefix: 'chat_images/', maxResults: 10 });
+      result.chatImagesStored = files.length;
+      result.status = 'READY_AND_ONLINE ✅';
+    } catch (opErr) {
+      result.status = 'BUCKET_EXISTS_BUT_WRITE_FAILED ❌';
+      result.error = opErr.message;
+    }
+  } else {
+    result.status = 'STORAGE_NOT_ACTIVATED_OR_WRONG_BUCKET ❌';
+    result.help = 'Check Firebase Console -> Build -> Storage to ensure Storage is enabled: https://console.firebase.google.com/project/line-bot-sumarizer/storage';
+  }
+
+  res.json(result);
+});
+
+// Test endpoint for attention items query
+app.get('/test-attention', async (req, res) => {
+  try {
+    const hoursBack = parseInt(req.query.hoursBack) || 72;
+    const cutoff = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
+    const database = getDb();
+    const chatsSnapshot = await database.collection('chats').limit(20).get();
+    const attentionItems = [];
+    const questionRegex = /\?|ช่วย|รบกวน|ด่วน|urgent|please|how|what|when|where|why|can you/i;
+
+    for (const chatDoc of chatsSnapshot.docs) {
+      const chatId = chatDoc.id;
+      const chatName = chatDoc.data().groupName || chatDoc.data().name || chatId;
+      const msgSnapshot = await database.collection('chats')
+        .doc(chatId)
+        .collection('messages')
+        .where('timestamp', '>=', cutoff)
+        .limit(100)
+        .get();
+
+      msgSnapshot.forEach(doc => {
+        const data = doc.data();
+        const text = data.text || '';
+        if (questionRegex.test(text)) {
+          attentionItems.push({
+            id: doc.id,
+            chatId,
+            chatName,
+            sender: data.displayName || data.userId || 'User',
+            text
+          });
+        }
+      });
+    }
+    res.json({ success: true, count: attentionItems.length, items: attentionItems });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message, stack: err.stack });
+  }
+});
+
+app.get('/debug/webhook', (req, res) => {
+  res.json({ total: recentWebhookLogs.length, logs: recentWebhookLogs });
+});
+
+app.get('/debug/chats', async (req, res) => {
+  try {
+    const database = getDb();
+    const snapshot = await database.collection('chats').limit(15).get();
+    const chats = await Promise.all(snapshot.docs.map(async (doc) => {
+      const data = doc.data();
+      let recentMessages = [];
+      try {
+        const msgSnap = await doc.ref.collection('messages').orderBy('timestamp', 'desc').limit(3).get();
+        recentMessages = msgSnap.docs.map(d => ({
+          id: d.id,
+          text: d.data().text,
+          type: d.data().messageType || 'text',
+          imageId: d.data().imageId || null,
+          time: d.data().timestamp ? (d.data().timestamp.toDate ? d.data().timestamp.toDate().toISOString() : d.data().timestamp) : null
+        }));
+      } catch (e) {}
+      return {
+        id: doc.id,
+        groupName: data.groupName || data.name || 'Unnamed',
+        chatsType: data.chatsType,
+        lastActivity: data.lastActivity ? (data.lastActivity.toDate ? data.lastActivity.toDate().toISOString() : data.lastActivity) : null,
+        recentMessages
+      };
+    }));
+    res.json({ totalChats: snapshot.size, chats });
+  } catch (error) {
+    console.error('Error fetching chats in /debug/chats:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Scheduled Daily Storage Cleanup (removes non-important images older than 90 days)
+async function runDailyImageCleanup(daysOverride = null) {
+  try {
+    const daysThreshold = daysOverride !== null ? daysOverride : (parseInt(process.env.IMAGE_RETENTION_DAYS, 10) || 90);
+    console.log(`Running daily cleanup of old non-important images older than ${daysThreshold} days...`);
+    const cutoff = new Date(Date.now() - daysThreshold * 24 * 60 * 60 * 1000); // 90 days
+    const database = getDb();
+    const snapshot = await database.collection('chat_images')
+      .where('timestamp', '<=', cutoff)
+      .get();
+
+    const bucket = await resolveStorageBucket();
+
+    let count = 0;
+    for (const doc of snapshot.docs) {
+      const data = doc.data();
+      if (data.isImportant === true || data.deletedFromStorage === true) {
+        continue;
+      }
+      if (data.storagePath) {
+        try {
+          await bucket.file(data.storagePath).delete({ ignoreNotFound: true });
+        } catch (e) {}
+      }
+      await doc.ref.update({
+        deletedFromStorage: true,
+        base64Thumb: admin.firestore.FieldValue.delete(),
+        deletedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+      count++;
+    }
+    console.log(`Daily image cleanup completed (${daysThreshold}d retention). Cleaned ${count} images.`);
+    return count;
+  } catch (err) {
+    console.error('Error during daily image cleanup:', err);
+    throw err;
+  }
+}
 
 // --- 2. ADD CODE ENDPOINTS ---
 // Endpoint to display cached code data
@@ -1022,11 +1417,23 @@ app.post('/webhook', (req, res) => {
   }
   
   line.middleware(config)(req, res, () => {
+    logWebhook({
+      type: 'webhook_hit',
+      eventCount: (req.body && req.body.events) ? req.body.events.length : 0,
+      events: (req.body && req.body.events) ? req.body.events.map(e => ({
+        type: e.type,
+        messageType: e.message && e.message.type,
+        messageId: e.message && e.message.id,
+        source: e.source
+      })) : []
+    });
+
     Promise
       .all(req.body.events.map(handleEvent))
       .then((result) => res.json(result))
       .catch((err) => {
-        console.error(err);
+        logWebhook({ type: 'webhook_error', error: err.message, stack: err.stack });
+        console.error('Webhook error:', err);
         res.status(500).end();
       });
   });
@@ -1548,6 +1955,7 @@ async function processChatImage(client, event) {
   const chatsType = event.source.groupId ? 'group' : (event.source.roomId ? 'room' : 'user');
 
   console.log(`Processing hybrid image message ID: ${messageId} in ${chatsType} ${chatsId}`);
+  logWebhook({ type: 'image_processing_start', messageId, chatsId, chatsType });
 
   // Get user profile & group name safely
   let displayName = 'Unknown User';
@@ -1583,8 +1991,10 @@ async function processChatImage(client, event) {
   try {
     const stream = await client.getMessageContent(messageId);
     imageBuffer = await streamToBuffer(stream);
+    logWebhook({ type: 'image_downloaded', messageId, bytes: imageBuffer.length });
     console.log(`Image downloaded from LINE: ${imageBuffer.length} bytes`);
   } catch (dlErr) {
+    logWebhook({ type: 'image_download_failed', messageId, error: dlErr.message });
     console.warn('Could not download image from LINE:', dlErr.message);
   }
 
@@ -1605,9 +2015,11 @@ async function processChatImage(client, event) {
         const result = await model.generateContent([prompt, imagePart]);
         const res = await result.response;
         imageSummary = res.text().trim();
+        logWebhook({ type: 'image_captioned', messageId, summary: imageSummary });
         console.log(`Image captioned successfully: ${imageSummary}`);
       }
     } catch (visionErr) {
+      logWebhook({ type: 'image_caption_failed', messageId, error: visionErr.message });
       console.warn('Gemini vision captioning warning:', visionErr.message);
     }
   }
@@ -1623,8 +2035,10 @@ async function processChatImage(client, event) {
         metadata: { contentType: 'image/jpeg' }
       });
       storageSaved = true;
+      logWebhook({ type: 'image_storage_saved', messageId, bucket: bucket.name, storagePath });
       console.log(`Image saved to Firebase Storage at ${storagePath} in bucket ${bucket.name}`);
     } catch (storageErr) {
+      logWebhook({ type: 'image_storage_failed', messageId, error: storageErr.message });
       console.warn('Firebase Storage upload warning:', storageErr.message);
     }
   }
@@ -1646,6 +2060,7 @@ async function processChatImage(client, event) {
       timestamp: admin.firestore.FieldValue.serverTimestamp()
     });
   } catch (metaErr) {
+    logWebhook({ type: 'image_metadata_save_failed', messageId, error: metaErr.message });
     console.warn('Could not write to chat_images doc:', metaErr.message);
   }
 
@@ -1674,8 +2089,10 @@ async function processChatImage(client, event) {
     };
 
     const docRef = await chatDocRef.collection('messages').add(messageData);
+    logWebhook({ type: 'image_message_saved', messageId, firestoreId: docRef.id, chatsId });
     console.log(`Saved image message with summary to Firestore for ${chatsType} from ${displayName}: ${imageSummary}`);
   } catch (msgErr) {
+    logWebhook({ type: 'image_message_save_failed', messageId, error: msgErr.message });
     console.error('Error saving image message to Firestore:', msgErr);
   }
 
@@ -2176,4 +2593,21 @@ exports.lineSummaryBot = onRequest({ timeoutSeconds: 300, maxInstances: 1 }, asy
   
   // Route the request to the Express app
   app(req, res);
+});
+
+const { onSchedule } = require('firebase-functions/v2/scheduler');
+
+// Export Cloud Scheduler task: Daily image cleanup at 3:00 AM Bangkok time (90-day retention)
+exports.dailyImageCleanup = onSchedule({
+  schedule: 'every day 03:00',
+  timeZone: 'Asia/Bangkok',
+  timeoutSeconds: 300,
+  maxInstances: 1
+}, async (event) => {
+  console.log('Running scheduled daily image cleanup via Cloud Scheduler...');
+  try {
+    await runDailyImageCleanup();
+  } catch (err) {
+    console.error('Scheduled daily image cleanup failed:', err);
+  }
 });
