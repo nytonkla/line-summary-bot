@@ -97,24 +97,30 @@ function createMcpServer(db, lineClient, genAIModel) {
             });
           });
         } else {
-          let query = db.collectionGroup('messages');
-          if (hoursBack) {
-            const cutoff = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
-            query = query.where('timestamp', '>=', cutoff);
-          }
-          const snapshot = await query.limit(limit).get();
-          snapshot.forEach(doc => {
-            const data = doc.data();
-            const parentChatId = doc.ref.parent.parent ? doc.ref.parent.parent.id : 'unknown';
-            messages.push({
-              id: doc.id,
-              chatId: parentChatId,
-              senderId: data.userId || data.senderId || 'unknown',
-              senderName: data.displayName || data.senderName || 'User',
-              text: data.text || data.message || '',
-              timestamp: data.timestamp ? (data.timestamp.toDate ? data.timestamp.toDate().toISOString() : data.timestamp) : null
+          // Cross-chat query: iterate through active chats to avoid requiring collection group indexes
+          const chatsSnapshot = await db.collection('chats').limit(20).get();
+          const cutoff = hoursBack ? new Date(Date.now() - hoursBack * 60 * 60 * 1000) : null;
+
+          for (const chatDoc of chatsSnapshot.docs) {
+            let query = db.collection('chats').doc(chatDoc.id).collection('messages');
+            if (cutoff) {
+              query = query.where('timestamp', '>=', cutoff);
+            }
+            const snapshot = await query.limit(Math.ceil(limit / Math.max(chatsSnapshot.size, 1)) || 20).get();
+            snapshot.forEach(doc => {
+              const data = doc.data();
+              messages.push({
+                id: doc.id,
+                chatId: chatDoc.id,
+                chatName: chatDoc.data().groupName || chatDoc.data().name || chatDoc.id,
+                senderId: data.userId || data.senderId || 'unknown',
+                senderName: data.displayName || data.senderName || 'User',
+                text: data.text || data.message || '',
+                timestamp: data.timestamp ? (data.timestamp.toDate ? data.timestamp.toDate().toISOString() : data.timestamp) : null
+              });
             });
-          });
+            if (messages.length >= limit) break;
+          }
         }
 
         return {
@@ -244,26 +250,35 @@ Provide a concise, high-level Executive Morning Briefing in Markdown:
     async ({ hoursBack }) => {
       try {
         const cutoff = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
-        const snapshot = await db.collectionGroup('messages')
-          .where('timestamp', '>=', cutoff)
-          .limit(100)
-          .get();
-
+        const chatsSnapshot = await db.collection('chats').limit(20).get();
         const attentionItems = [];
         const questionRegex = /\?|ช่วย|รบกวน|ด่วน|urgent|please|how|what|when|where|why|can you/i;
 
-        snapshot.forEach(doc => {
-          const data = doc.data();
-          const text = data.text || '';
-          if (questionRegex.test(text)) {
-            attentionItems.push({
-              id: doc.id,
-              sender: data.displayName || data.userId || 'User',
-              text,
-              timestamp: data.timestamp ? (data.timestamp.toDate ? data.timestamp.toDate().toISOString() : data.timestamp) : null
-            });
-          }
-        });
+        for (const chatDoc of chatsSnapshot.docs) {
+          const chatId = chatDoc.id;
+          const chatName = chatDoc.data().groupName || chatDoc.data().name || chatId;
+          const msgSnapshot = await db.collection('chats')
+            .doc(chatId)
+            .collection('messages')
+            .where('timestamp', '>=', cutoff)
+            .limit(100)
+            .get();
+
+          msgSnapshot.forEach(doc => {
+            const data = doc.data();
+            const text = data.text || '';
+            if (questionRegex.test(text)) {
+              attentionItems.push({
+                id: doc.id,
+                chatId,
+                chatName,
+                sender: data.displayName || data.userId || 'User',
+                text,
+                timestamp: data.timestamp ? (data.timestamp.toDate ? data.timestamp.toDate().toISOString() : data.timestamp) : null
+              });
+            }
+          });
+        }
 
         return {
           content: [
