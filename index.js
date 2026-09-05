@@ -1000,6 +1000,51 @@ app.get('/test-attention', async (req, res) => {
   }
 });
 
+// In-memory debug logger for webhook events
+const recentWebhookLogs = [];
+function logWebhook(item) {
+  recentWebhookLogs.unshift({
+    time: new Date().toISOString(),
+    ...item
+  });
+  if (recentWebhookLogs.length > 50) recentWebhookLogs.pop();
+}
+
+app.get('/debug/webhook', (req, res) => {
+  res.json({ total: recentWebhookLogs.length, logs: recentWebhookLogs });
+});
+
+app.get('/debug/chats', async (req, res) => {
+  try {
+    const snapshot = await db.collection('chats').get();
+    const chats = [];
+    for (const doc of snapshot.docs) {
+      const data = doc.data();
+      let recentMessages = [];
+      try {
+        const msgSnap = await doc.ref.collection('messages').orderBy('timestamp', 'desc').limit(5).get();
+        recentMessages = msgSnap.docs.map(d => ({
+          id: d.id,
+          text: d.data().text,
+          type: d.data().messageType || 'text',
+          imageId: d.data().imageId || null,
+          time: d.data().timestamp ? (d.data().timestamp.toDate ? d.data().timestamp.toDate().toISOString() : d.data().timestamp) : null
+        }));
+      } catch (e) {}
+      chats.push({
+        id: doc.id,
+        groupName: data.groupName || data.name || 'Unnamed',
+        chatsType: data.chatsType,
+        lastActivity: data.lastActivity ? (data.lastActivity.toDate ? data.lastActivity.toDate().toISOString() : data.lastActivity) : null,
+        recentMessages
+      });
+    }
+    res.json({ total: chats.length, chats });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- 3.5. ADD MESSAGES ENDPOINT ---
 // Optional endpoint to get recent messages (when specifically requested)
 app.get('/messages', async (req, res) => {
@@ -1072,11 +1117,24 @@ app.get('/messages', async (req, res) => {
 // --- 3. CREATE THE WEBHOOK ---
 // This is the endpoint that LINE will send message data to
 app.post('/webhook', line.middleware(config), (req, res) => {
+  const events = req.body.events || [];
+  logWebhook({
+    type: 'webhook_hit',
+    eventCount: events.length,
+    events: events.map(e => ({
+      type: e.type,
+      messageType: e.message?.type,
+      messageId: e.message?.id,
+      source: e.source
+    }))
+  });
+
   Promise
-    .all(req.body.events.map(handleEvent))
+    .all(events.map(handleEvent))
     .then((result) => res.json(result))
     .catch((err) => {
-      console.error(err);
+      logWebhook({ type: 'webhook_error', error: err.message, stack: err.stack });
+      console.error('Webhook error:', err);
       res.status(500).end();
     });
 });
@@ -1545,42 +1603,56 @@ Translation Rule: If the text is in simplified Chinese, Arabic, or any language 
 
 // Process general chat images (Hybrid pipeline: Gemini vision captioning + Storage + Firestore indexing)
 async function processChatImage(client, event) {
+  const messageId = event.message.id;
+  const chatsId = event.source.groupId || event.source.roomId || event.source.userId || 'unknown_chat';
+  const chatsType = event.source.groupId ? 'group' : (event.source.roomId ? 'room' : 'user');
+
+  console.log(`Processing hybrid image message ID: ${messageId} in ${chatsType} ${chatsId}`);
+  logWebhook({ type: 'image_processing_start', messageId, chatsId, chatsType });
+
+  // Get user profile & group name safely
+  let displayName = 'Unknown User';
+  let groupName = null;
   try {
-    const messageId = event.message.id;
-    const chatsId = event.source.groupId || event.source.userId;
-    const chatsType = event.source.groupId ? 'group' : 'user';
-
-    console.log(`Processing hybrid image message ID: ${messageId} in ${chatsType} ${chatsId}`);
-
-    // Get user profile & group name
-    let displayName = 'Unknown User';
-    let groupName = null;
-    try {
-      if (chatsType === 'group') {
-        try {
-          const profile = await client.getGroupMemberProfile(event.source.groupId, event.source.userId);
-          displayName = profile.displayName;
-        } catch (e) {}
-        try {
-          const groupSummary = await client.getGroupSummary(event.source.groupId);
-          groupName = groupSummary.groupName;
-        } catch (e) {
-          groupName = 'Unknown Group';
-        }
-      } else {
-        try {
-          const profile = await client.getProfile(event.source.userId);
-          displayName = profile.displayName;
-        } catch (e) {}
+    if (chatsType === 'group') {
+      try {
+        const profile = await client.getGroupMemberProfile(event.source.groupId, event.source.userId);
+        if (profile && profile.displayName) displayName = profile.displayName;
+      } catch (e) {}
+      try {
+        const groupSummary = await client.getGroupSummary(event.source.groupId);
+        if (groupSummary && groupSummary.groupName) groupName = groupSummary.groupName;
+      } catch (e) {
+        groupName = 'FamilyGroup';
       }
-    } catch (e) {}
+    } else if (chatsType === 'room') {
+      try {
+        const profile = await client.getRoomMemberProfile(event.source.roomId, event.source.userId);
+        if (profile && profile.displayName) displayName = profile.displayName;
+      } catch (e) {}
+      groupName = 'Multi-person Chat';
+    } else {
+      try {
+        const profile = await client.getProfile(event.source.userId);
+        if (profile && profile.displayName) displayName = profile.displayName;
+      } catch (e) {}
+    }
+  } catch (e) {}
 
-    // 1. Download image stream from LINE
+  // 1. Download image stream from LINE
+  let imageBuffer = null;
+  try {
     const stream = await client.getMessageContent(messageId);
-    const imageBuffer = await streamToBuffer(stream);
+    imageBuffer = await streamToBuffer(stream);
+    logWebhook({ type: 'image_downloaded', messageId, bytes: imageBuffer.length });
+  } catch (dlErr) {
+    logWebhook({ type: 'image_download_failed', messageId, error: dlErr.message });
+    console.warn('Could not download image from LINE:', dlErr.message);
+  }
 
-    // 2. Fast Concise Vision Summary with Gemini
-    let imageSummary = 'Photo / Image attachment';
+  // 2. Fast Concise Vision Summary with Gemini
+  let imageSummary = 'Photo / Image attachment';
+  if (imageBuffer) {
     try {
       const imagePart = {
         inlineData: {
@@ -1593,13 +1665,17 @@ async function processChatImage(client, event) {
       const result = await model.generateContent([prompt, imagePart]);
       const res = await result.response;
       imageSummary = res.text().trim();
+      logWebhook({ type: 'image_captioned', messageId, summary: imageSummary });
     } catch (visionErr) {
+      logWebhook({ type: 'image_caption_failed', messageId, error: visionErr.message });
       console.warn('Gemini vision captioning warning:', visionErr.message);
     }
+  }
 
-    // 3. Save Image to Firebase Storage
-    const storagePath = `chat_images/${chatsId}/${messageId}.jpg`;
-    let storageSaved = false;
+  // 3. Save Image to Firebase Storage
+  const storagePath = `chat_images/${chatsId}/${messageId}.jpg`;
+  let storageSaved = false;
+  if (imageBuffer) {
     try {
       const bucket = await resolveStorageBucket();
       await bucket.file(storagePath).save(imageBuffer, {
@@ -1607,19 +1683,22 @@ async function processChatImage(client, event) {
         metadata: { contentType: 'image/jpeg' }
       });
       storageSaved = true;
+      logWebhook({ type: 'image_storage_saved', messageId, bucket: bucket.name, storagePath });
       console.log(`Image saved to Firebase Storage at ${storagePath} in bucket ${bucket.name}`);
     } catch (storageErr) {
+      logWebhook({ type: 'image_storage_failed', messageId, error: storageErr.message });
       console.warn('Firebase Storage upload warning:', storageErr.message);
     }
+  }
 
-    // Save image metadata into 'chat_images' collection
-    // If under 900KB, also save base64 directly in doc for instant retrieval by Claude
-    const base64Thumb = imageBuffer.length < 900000 ? imageBuffer.toString('base64') : null;
+  // 4. Save image metadata into 'chat_images' collection
+  const base64Thumb = (imageBuffer && imageBuffer.length < 900000) ? imageBuffer.toString('base64') : null;
+  try {
     await db.collection('chat_images').doc(messageId).set({
       imageId: messageId,
       chatId: chatsId,
-      chatName: groupName || displayName,
-      senderId: event.source.userId,
+      chatName: groupName || displayName || 'Chat',
+      senderId: event.source.userId || 'unknown',
       senderName: displayName,
       summary: imageSummary,
       storagePath: storageSaved ? storagePath : null,
@@ -1628,13 +1707,18 @@ async function processChatImage(client, event) {
       deletedFromStorage: false,
       timestamp: admin.firestore.FieldValue.serverTimestamp()
     });
+  } catch (metaErr) {
+    logWebhook({ type: 'image_metadata_save_failed', messageId, error: metaErr.message });
+    console.warn('Could not write to chat_images doc:', metaErr.message);
+  }
 
-    // 4. Save message into chats/{chatsId}/messages so Claude can read and search without downloading
+  // 5. GUARANTEED: Save message into chats/{chatsId}/messages so Claude can read and search
+  try {
     const chatDocRef = db.collection('chats').doc(chatsId);
     await chatDocRef.set({
       chatsId: chatsId,
       chatsType: chatsType,
-      groupName: groupName,
+      groupName: groupName || displayName || 'Group Chat',
       lastActivity: admin.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
 
@@ -1644,22 +1728,23 @@ async function processChatImage(client, event) {
       imageId: messageId,
       text: `📷 [Image: ${imageSummary}] (Image ID: ${messageId})`,
       timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      eventType: event.type,
-      userId: event.source.userId,
-      displayName: displayName,
-      groupName: groupName,
+      eventType: event.type || 'message',
+      userId: event.source.userId || 'unknown',
+      displayName: displayName || 'User',
+      groupName: groupName || displayName || null,
       chatsId: chatsId,
       chatsType: chatsType
     };
 
-    await chatDocRef.collection('messages').add(messageData);
+    const docRef = await chatDocRef.collection('messages').add(messageData);
+    logWebhook({ type: 'image_message_saved', messageId, firestoreId: docRef.id, chatsId });
     console.log(`Saved image message with summary to Firestore for ${chatsType} from ${displayName}: ${imageSummary}`);
-
-    return Promise.resolve(null);
-  } catch (error) {
-    console.error('Error in processChatImage:', error);
-    return Promise.resolve(null);
+  } catch (msgErr) {
+    logWebhook({ type: 'image_message_save_failed', messageId, error: msgErr.message });
+    console.error('Error saving image message to Firestore:', msgErr);
   }
+
+  return Promise.resolve(null);
 }
 
 // --- 3. DEFINE THE EVENT HANDLER ---
