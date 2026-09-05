@@ -707,6 +707,43 @@ setInterval(() => {
   }
 }, 60000);
 
+// Storage bucket resolver: auto-discovers active Firebase Storage bucket
+let cachedStorageBucket = null;
+async function resolveStorageBucket() {
+  if (cachedStorageBucket) return cachedStorageBucket;
+
+  const candidates = [
+    process.env.FIREBASE_STORAGE_BUCKET,
+    'line-bot-sumarizer.firebasestorage.app',
+    'line-bot-sumarizer.appspot.com'
+  ].filter(Boolean);
+
+  for (const name of candidates) {
+    try {
+      const b = admin.storage().bucket(name);
+      const [exists] = await b.exists();
+      if (exists) {
+        cachedStorageBucket = b;
+        console.log(`Auto-discovered active Firebase Storage bucket: ${name}`);
+        return b;
+      }
+    } catch (e) {}
+  }
+
+  // Fallback: list all buckets in the GCP project
+  try {
+    const [buckets] = await admin.storage().bucket('temp').storage.getBuckets();
+    if (buckets && buckets.length > 0) {
+      const primary = buckets.find(b => !b.name.startsWith('gcf-v2')) || buckets[0];
+      cachedStorageBucket = primary;
+      console.log(`Using available bucket: ${primary.name}`);
+      return primary;
+    }
+  } catch (e) {}
+
+  return admin.storage().bucket('line-bot-sumarizer.appspot.com');
+}
+
 // Scheduled Daily Storage Cleanup (3:00 AM daily - removes non-important images older than 90 days)
 async function runDailyImageCleanup(daysOverride = null) {
   try {
@@ -717,13 +754,7 @@ async function runDailyImageCleanup(daysOverride = null) {
       .where('timestamp', '<=', cutoff)
       .get();
 
-    const bucketName = process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.appspot.com';
-    let bucket;
-    try {
-      bucket = admin.storage().bucket(bucketName);
-    } catch (e) {
-      bucket = admin.storage().bucket();
-    }
+    const bucket = await resolveStorageBucket();
 
     let count = 0;
     for (const doc of snapshot.docs) {
@@ -1531,19 +1562,13 @@ async function processChatImage(client, event) {
     const storagePath = `chat_images/${chatsId}/${messageId}.jpg`;
     let storageSaved = false;
     try {
-      const bucketName = process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.appspot.com';
-      let bucket;
-      try {
-        bucket = admin.storage().bucket(bucketName);
-      } catch (e) {
-        bucket = admin.storage().bucket();
-      }
+      const bucket = await resolveStorageBucket();
       await bucket.file(storagePath).save(imageBuffer, {
         contentType: 'image/jpeg',
         metadata: { contentType: 'image/jpeg' }
       });
       storageSaved = true;
-      console.log(`Image saved to Firebase Storage at ${storagePath}`);
+      console.log(`Image saved to Firebase Storage at ${storagePath} in bucket ${bucket.name}`);
     } catch (storageErr) {
       console.warn('Firebase Storage upload warning:', storageErr.message);
     }

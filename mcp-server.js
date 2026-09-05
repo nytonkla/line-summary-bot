@@ -9,6 +9,40 @@ const admin = require('firebase-admin');
 const line = require('@line/bot-sdk');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
+// Storage bucket auto-discovery resolver
+let cachedMcpBucket = null;
+async function resolveStorageBucket() {
+  if (cachedMcpBucket) return cachedMcpBucket;
+
+  const candidates = [
+    process.env.FIREBASE_STORAGE_BUCKET,
+    'line-bot-sumarizer.firebasestorage.app',
+    'line-bot-sumarizer.appspot.com'
+  ].filter(Boolean);
+
+  for (const name of candidates) {
+    try {
+      const b = admin.storage().bucket(name);
+      const [exists] = await b.exists();
+      if (exists) {
+        cachedMcpBucket = b;
+        return b;
+      }
+    } catch (e) {}
+  }
+
+  try {
+    const [buckets] = await admin.storage().bucket('temp').storage.getBuckets();
+    if (buckets && buckets.length > 0) {
+      const primary = buckets.find(b => !b.name.startsWith('gcf-v2')) || buckets[0];
+      cachedMcpBucket = primary;
+      return primary;
+    }
+  } catch (e) {}
+
+  return admin.storage().bucket('line-bot-sumarizer.appspot.com');
+}
+
 /**
  * Creates and initializes an MCP Server instance registered with all line-summary-bot tools.
  * @param {admin.firestore.Firestore} db - Firestore database instance
@@ -598,13 +632,7 @@ Provide a concise, high-level Executive Morning Briefing in Markdown:
         let base64Data = data.base64Thumb;
 
         if (!base64Data && data.storagePath) {
-          const bucketName = process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.appspot.com';
-          let bucket;
-          try {
-            bucket = admin.storage().bucket(bucketName);
-          } catch (e) {
-            bucket = admin.storage().bucket();
-          }
+          const bucket = await resolveStorageBucket();
           const file = bucket.file(data.storagePath);
           const [fileBuffer] = await file.download();
           base64Data = fileBuffer.toString('base64');
@@ -694,13 +722,7 @@ Provide a concise, high-level Executive Morning Briefing in Markdown:
           .where('timestamp', '<=', cutoff)
           .get();
 
-        const bucketName = process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.appspot.com';
-        let bucket;
-        try {
-          bucket = admin.storage().bucket(bucketName);
-        } catch (e) {
-          bucket = admin.storage().bucket();
-        }
+        const bucket = await resolveStorageBucket();
 
         const candidates = [];
         let deletedCount = 0;
@@ -767,13 +789,8 @@ Provide a concise, high-level Executive Morning Briefing in Markdown:
     {},
     async () => {
       try {
-        const bucketName = process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.appspot.com';
-        let bucket;
-        try {
-          bucket = admin.storage().bucket(bucketName);
-        } catch (e) {
-          bucket = admin.storage().bucket();
-        }
+        const bucket = await resolveStorageBucket();
+        const bucketName = bucket.name;
 
         let totalSizeBytes = 0;
         let fileCount = 0;
