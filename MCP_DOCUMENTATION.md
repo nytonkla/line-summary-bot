@@ -84,7 +84,8 @@ Once connected, Claude will automatically gain access to 10 powerful tools:
 | `set_bot_rule` | Rules | Update response permissions (toggle between `drafting` and `autonomous` mode). |
 | `get_chat_image` | Vision | Downloads and renders an image sent in LINE directly in Claude for visual inspection. |
 | `mark_image_important` | Storage | Tags an image as important (receipt, diagram) to protect it from automated cleanup. |
-| `cleanup_old_images` | Storage | Cleans up non-important images older than N days while preserving text summaries. |
+| `cleanup_old_images` | Storage | Cleans up non-important images older than N days (default 90 days). |
+| `get_storage_usage` | Storage & Health | Analyzes Firebase Storage usage in MB/GB, quota percentage, and health alerts. |
 
 ---
 

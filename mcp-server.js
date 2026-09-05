@@ -666,7 +666,7 @@ Provide a concise, high-level Executive Morning Briefing in Markdown:
     'cleanup_old_images',
     'Cleans up non-important images from storage older than N days (keeps text summaries in chat history).',
     {
-      daysOld: z.number().optional().default(7).describe('Delete images older than this many days (default: 7)'),
+      daysOld: z.number().optional().default(90).describe('Delete images older than this many days (default: 90)'),
       dryRun: z.boolean().optional().default(false).describe('If true, previews images that would be deleted without actually deleting them')
     },
     async ({ daysOld, dryRun }) => {
@@ -735,6 +735,95 @@ Provide a concise, high-level Executive Morning Briefing in Markdown:
         return {
           isError: true,
           content: [{ type: 'text', text: `Failed to cleanup images: ${error.message}` }]
+        };
+      }
+    }
+  );
+
+  // -------------------------------------------------------------
+  // Tool 14: get_storage_usage
+  // -------------------------------------------------------------
+  server.tool(
+    'get_storage_usage',
+    'Analyzes Firebase Storage usage, total image counts, size in MB/GB, protected vs purgeable items, and storage quota health.',
+    {},
+    async () => {
+      try {
+        const bucketName = process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.appspot.com';
+        let bucket;
+        try {
+          bucket = admin.storage().bucket(bucketName);
+        } catch (e) {
+          bucket = admin.storage().bucket();
+        }
+
+        let totalSizeBytes = 0;
+        let fileCount = 0;
+
+        try {
+          const [files] = await bucket.getFiles({ prefix: 'chat_images/' });
+          fileCount = files.length;
+          files.forEach(f => {
+            totalSizeBytes += parseInt(f.metadata.size || '0', 10);
+          });
+        } catch (bucketErr) {
+          console.warn('Could not inspect storage bucket directly:', bucketErr.message);
+        }
+
+        const imagesSnapshot = await db.collection('chat_images').get();
+        let totalRecords = imagesSnapshot.size;
+        let importantCount = 0;
+        let deletedFromStorageCount = 0;
+        let oldestDate = null;
+        let newestDate = null;
+
+        imagesSnapshot.forEach(doc => {
+          const data = doc.data();
+          if (data.isImportant === true) importantCount++;
+          if (data.deletedFromStorage === true) deletedFromStorageCount++;
+
+          if (data.timestamp) {
+            const d = data.timestamp.toDate ? data.timestamp.toDate() : new Date(data.timestamp);
+            if (!oldestDate || d < oldestDate) oldestDate = d;
+            if (!newestDate || d > newestDate) newestDate = d;
+          }
+        });
+
+        const totalSizeMB = (totalSizeBytes / (1024 * 1024)).toFixed(2);
+        const freeTierLimitMB = 5120; // 5 GB Firebase free tier limit
+        const percentUsed = ((parseFloat(totalSizeMB) / freeTierLimitMB) * 100).toFixed(1);
+
+        const analysis = {
+          storageBucket: bucketName,
+          totalFilesStored: fileCount,
+          totalSizeMB: parseFloat(totalSizeMB),
+          totalSizeGB: (totalSizeBytes / (1024 * 1024 * 1024)).toFixed(3),
+          freeTierQuotaMB: freeTierLimitMB,
+          freeTierPercentUsed: `${percentUsed}%`,
+          quotaStatus: parseFloat(percentUsed) > 80 ? '⚠️ High Storage Warning' : '✅ Healthy',
+          databaseRecords: {
+            totalImageRecords: totalRecords,
+            markedImportantProtected: importantCount,
+            purgedFromStorage: deletedFromStorageCount,
+            activeFilesInStorage: totalRecords - deletedFromStorageCount
+          },
+          retentionPolicy: 'Auto-cleanup set to 90 days for non-important images',
+          oldestImageDate: oldestDate ? oldestDate.toISOString() : 'N/A',
+          newestImageDate: newestDate ? newestDate.toISOString() : 'N/A'
+        };
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(analysis, null, 2)
+            }
+          ]
+        };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Failed to analyze storage usage: ${error.message}` }]
         };
       }
     }

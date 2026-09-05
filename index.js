@@ -706,11 +706,12 @@ setInterval(() => {
   }
 }, 60000);
 
-// Scheduled Daily Storage Cleanup (3:00 AM daily - removes non-important images older than 7 days)
-async function runDailyImageCleanup() {
+// Scheduled Daily Storage Cleanup (3:00 AM daily - removes non-important images older than 90 days)
+async function runDailyImageCleanup(daysOverride = null) {
   try {
-    console.log('Running daily cleanup of old non-important images...');
-    const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // 7 days
+    const daysThreshold = daysOverride !== null ? daysOverride : (parseInt(process.env.IMAGE_RETENTION_DAYS, 10) || 90);
+    console.log(`Running daily cleanup of old non-important images older than ${daysThreshold} days...`);
+    const cutoff = new Date(Date.now() - daysThreshold * 24 * 60 * 60 * 1000); // 90 days
     const snapshot = await db.collection('chat_images')
       .where('timestamp', '<=', cutoff)
       .get();
@@ -741,7 +742,7 @@ async function runDailyImageCleanup() {
       });
       count++;
     }
-    console.log(`Daily image cleanup completed. Cleaned ${count} images.`);
+    console.log(`Daily image cleanup completed (${daysThreshold}d retention). Cleaned ${count} images.`);
   } catch (err) {
     console.error('Error during daily image cleanup:', err);
   }
