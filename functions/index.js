@@ -14,13 +14,19 @@ function getDb() {
       try {
         const serviceAccount = require('./serviceAccountKey.json');
         admin.initializeApp({
-          credential: admin.credential.cert(serviceAccount)
+          credential: admin.credential.cert(serviceAccount),
+          storageBucket: process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.firebasestorage.app'
         });
       } catch (e) {
-        admin.initializeApp();
+        admin.initializeApp({
+          storageBucket: process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.firebasestorage.app'
+        });
       }
     }
     dbInstance = admin.firestore();
+    try {
+      dbInstance.settings({ ignoreUndefinedProperties: true });
+    } catch (e) {}
   }
   return dbInstance;
 }
@@ -38,7 +44,7 @@ let genAI, modelInstance;
 function getModel() {
   if (!modelInstance && process.env.GEMINI_API_KEY) {
     genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    modelInstance = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-3.5-flash' });
+    modelInstance = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-1.5-flash' });
   }
   return modelInstance;
 }
@@ -467,7 +473,7 @@ async function saveMessageToDatabase(event, client) {
     // Write message data to Firestore
     const messageData = {
       messageId: event.message.id,
-      text: event.message.text,
+      text: event.message.text || '',
       timestamp: admin.firestore.FieldValue.serverTimestamp(),
       eventType: event.type,
       messageType: event.message.type,
@@ -1127,6 +1133,50 @@ async function getRecentImageMessageId(chatsId) {
   }
 }
 
+// Storage bucket resolver to guarantee connection to the active bucket
+let resolvedBucket = null;
+async function resolveStorageBucket() {
+  if (resolvedBucket) return resolvedBucket;
+  const preferred = process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.firebasestorage.app';
+  getDb(); // Ensure admin SDK is initialized
+
+  try {
+    const b = admin.storage().bucket(preferred);
+    const [exists] = await b.exists();
+    if (exists) {
+      resolvedBucket = b;
+      return resolvedBucket;
+    }
+  } catch (e) {
+    console.warn(`Bucket ${preferred} check warning:`, e.message);
+  }
+
+  try {
+    const defaultB = admin.storage().bucket();
+    const [exists] = await defaultB.exists();
+    if (exists) {
+      resolvedBucket = defaultB;
+      return resolvedBucket;
+    }
+  } catch (e) {
+    console.warn('Default bucket check warning:', e.message);
+  }
+
+  try {
+    const [buckets] = await admin.storage().bucket(preferred).storage.getBuckets();
+    if (buckets && buckets.length > 0) {
+      const active = buckets.find(b => b.name === preferred) || buckets[0];
+      resolvedBucket = active;
+      return resolvedBucket;
+    }
+  } catch (e) {
+    console.warn('getBuckets warning:', e.message);
+  }
+
+  resolvedBucket = admin.storage().bucket(preferred);
+  return resolvedBucket;
+}
+
 // Business Card Scanner Feature (Multimodal LLM + vCard + Firebase Storage)
 async function processBusinessCardImage(client, event, targetMessageId = null) {
   try {
@@ -1195,13 +1245,7 @@ Translation Rule: If the text is in simplified Chinese, Arabic, or any language 
     getDb(); // Ensure admin SDK initialized
 
     const safeName = (contactData.firstName || 'contact').replace(/[^a-zA-Z0-9]/g, '_');
-    const bucketName = process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.appspot.com';
-    let bucket;
-    try {
-      bucket = admin.storage().bucket(bucketName);
-    } catch (e) {
-      bucket = admin.storage().bucket();
-    }
+    const bucket = await resolveStorageBucket();
 
     // Upload vCard (.vcf)
     try {
@@ -1497,6 +1541,147 @@ Translation Rule: If the text is in simplified Chinese, Arabic, or any language 
   }
 }
 
+// Process general chat images (Hybrid pipeline: Gemini vision captioning + Storage + Firestore indexing)
+async function processChatImage(client, event) {
+  const messageId = event.message.id;
+  const chatsId = event.source.groupId || event.source.roomId || event.source.userId || 'unknown_chat';
+  const chatsType = event.source.groupId ? 'group' : (event.source.roomId ? 'room' : 'user');
+
+  console.log(`Processing hybrid image message ID: ${messageId} in ${chatsType} ${chatsId}`);
+
+  // Get user profile & group name safely
+  let displayName = 'Unknown User';
+  let groupName = null;
+  try {
+    if (chatsType === 'group') {
+      try {
+        const profile = await client.getGroupMemberProfile(event.source.groupId, event.source.userId);
+        if (profile && profile.displayName) displayName = profile.displayName;
+      } catch (e) {}
+      try {
+        const groupSummary = await client.getGroupSummary(event.source.groupId);
+        if (groupSummary && groupSummary.groupName) groupName = groupSummary.groupName;
+      } catch (e) {
+        groupName = 'FamilyGroup';
+      }
+    } else if (chatsType === 'room') {
+      try {
+        const profile = await client.getRoomMemberProfile(event.source.roomId, event.source.userId);
+        if (profile && profile.displayName) displayName = profile.displayName;
+      } catch (e) {}
+      groupName = 'Multi-person Chat';
+    } else {
+      try {
+        const profile = await client.getProfile(event.source.userId);
+        if (profile && profile.displayName) displayName = profile.displayName;
+      } catch (e) {}
+    }
+  } catch (e) {}
+
+  // 1. Download image stream from LINE
+  let imageBuffer = null;
+  try {
+    const stream = await client.getMessageContent(messageId);
+    imageBuffer = await streamToBuffer(stream);
+    console.log(`Image downloaded from LINE: ${imageBuffer.length} bytes`);
+  } catch (dlErr) {
+    console.warn('Could not download image from LINE:', dlErr.message);
+  }
+
+  // 2. Fast Concise Vision Summary with Gemini
+  let imageSummary = 'Photo / Image attachment';
+  if (imageBuffer) {
+    try {
+      const model = getModel();
+      if (model) {
+        const imagePart = {
+          inlineData: {
+            data: imageBuffer.toString('base64'),
+            mimeType: 'image/jpeg',
+          },
+        };
+        const prompt = 'Describe this image concisely in 1-2 sentences for a chat log. If there are visible text, numbers, receipts, errors, slips, or charts, mention them specifically.';
+        await geminiRateLimiter.waitForSlot();
+        const result = await model.generateContent([prompt, imagePart]);
+        const res = await result.response;
+        imageSummary = res.text().trim();
+        console.log(`Image captioned successfully: ${imageSummary}`);
+      }
+    } catch (visionErr) {
+      console.warn('Gemini vision captioning warning:', visionErr.message);
+    }
+  }
+
+  // 3. Save Image to Firebase Storage
+  const storagePath = `chat_images/${chatsId}/${messageId}.jpg`;
+  let storageSaved = false;
+  if (imageBuffer) {
+    try {
+      const bucket = await resolveStorageBucket();
+      await bucket.file(storagePath).save(imageBuffer, {
+        contentType: 'image/jpeg',
+        metadata: { contentType: 'image/jpeg' }
+      });
+      storageSaved = true;
+      console.log(`Image saved to Firebase Storage at ${storagePath} in bucket ${bucket.name}`);
+    } catch (storageErr) {
+      console.warn('Firebase Storage upload warning:', storageErr.message);
+    }
+  }
+
+  // 4. Save image metadata into 'chat_images' collection
+  const base64Thumb = (imageBuffer && imageBuffer.length < 900000) ? imageBuffer.toString('base64') : null;
+  try {
+    await db.collection('chat_images').doc(messageId).set({
+      imageId: messageId,
+      chatId: chatsId,
+      chatName: groupName || displayName || 'Chat',
+      senderId: event.source.userId || 'unknown',
+      senderName: displayName,
+      summary: imageSummary,
+      storagePath: storageSaved ? storagePath : null,
+      base64Thumb: base64Thumb,
+      isImportant: false,
+      deletedFromStorage: false,
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+  } catch (metaErr) {
+    console.warn('Could not write to chat_images doc:', metaErr.message);
+  }
+
+  // 5. GUARANTEED: Save message into chats/{chatsId}/messages so Claude can read and search
+  try {
+    const chatDocRef = db.collection('chats').doc(chatsId);
+    await chatDocRef.set({
+      chatsId: chatsId,
+      chatsType: chatsType,
+      groupName: groupName || displayName || 'Group Chat',
+      lastActivity: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    const messageData = {
+      messageId: messageId,
+      messageType: 'image',
+      imageId: messageId,
+      text: `📷 [Image: ${imageSummary}] (Image ID: ${messageId})`,
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      eventType: event.type || 'message',
+      userId: event.source.userId || 'unknown',
+      displayName: displayName || 'User',
+      groupName: groupName || displayName || null,
+      chatsId: chatsId,
+      chatsType: chatsType
+    };
+
+    const docRef = await chatDocRef.collection('messages').add(messageData);
+    console.log(`Saved image message with summary to Firestore for ${chatsType} from ${displayName}: ${imageSummary}`);
+  } catch (msgErr) {
+    console.error('Error saving image message to Firestore:', msgErr);
+  }
+
+  return Promise.resolve(null);
+}
+
 // --- 3. DEFINE THE EVENT HANDLER ---
 // This function handles the incoming messages
 async function handleEvent(event) {
@@ -1504,12 +1689,9 @@ async function handleEvent(event) {
     return Promise.resolve(null);
   }
 
-  // Save message to database
-  await saveMessageToDatabase(event, client);
+  const chatsId = event.source.groupId || event.source.roomId || event.source.userId;
 
-  const chatsId = event.source.groupId || event.source.userId;
-
-  // Handle image messages (Business Card Scanner - requires active 15s /newcontact session)
+  // Handle image messages
   if (event.message.type === 'image') {
     const hasCaptionCommand = event.message.text && event.message.text.toLowerCase().includes('/newcontact');
     const isSessionActive = await isNewContactSessionActive(chatsId);
@@ -1518,10 +1700,13 @@ async function handleEvent(event) {
       console.log('Image received during active /newcontact window. Processing business card...');
       return processBusinessCardImage(client, event);
     } else {
-      console.log('Image received outside /newcontact window. Skipping OCR scanner.');
-      return Promise.resolve(null);
+      console.log('Image received in chat. Processing hybrid image pipeline...');
+      return processChatImage(client, event);
     }
   }
+
+  // Save text message to database
+  await saveMessageToDatabase(event, client);
 
   // We only want to handle text messages for standard bot commands
   if (event.message.type !== 'text') {
