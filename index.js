@@ -522,7 +522,7 @@ app.post('/oauth/register', express.json(), (req, res) => {
   res.status(201).json(clientData);
 });
 
-// 4. Authorization Endpoint (User approval screen)
+// 4. Authorization Endpoint (Immediate redirect with code and state preserved)
 app.get('/oauth/authorize', (req, res) => {
   const { client_id, redirect_uri, state, response_type } = req.query;
   const code = 'code_' + Math.random().toString(36).substring(2, 12);
@@ -538,32 +538,8 @@ app.get('/oauth/authorize', (req, res) => {
     redirectTarget += (redirectTarget.includes('?') ? '&' : '?') + `code=${code}${state ? `&state=${state}` : ''}`;
   }
 
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <title>Authorize LINE Summary Bot</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #0f172a; color: white; }
-          .card { background: #1e293b; padding: 2rem; border-radius: 12px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3); max-width: 420px; text-align: center; border: 1px solid #334155; }
-          h2 { margin-top: 0; color: #f8fafc; }
-          p { color: #94a3b8; line-height: 1.5; font-size: 15px; }
-          button { background: #2563eb; color: white; border: none; padding: 12px 24px; border-radius: 8px; font-size: 16px; cursor: pointer; width: 100%; font-weight: 600; margin-top: 1.5rem; transition: background 0.2s; }
-          button:hover { background: #1d4ed8; }
-        </style>
-      </head>
-      <body>
-        <div class="card">
-          <h2>Connect LINE Summary Bot</h2>
-          <p>Authorize Claude to connect to your personal LINE Summary Bot agent and access chat summaries and tools?</p>
-          <form method="GET" action="${redirectTarget}">
-            <button type="submit">Approve Connection</button>
-          </form>
-        </div>
-      </body>
-    </html>
-  `);
+  console.log('OAuth authorize redirecting to:', redirectTarget);
+  res.redirect(redirectTarget);
 });
 
 // 5. Token Exchange Endpoint
