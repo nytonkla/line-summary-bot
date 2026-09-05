@@ -5,8 +5,6 @@ const admin = require('firebase-admin');
 const express = require('express');
 const cors = require('cors');
 const line = require('@line/bot-sdk');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { createMcpServer, SSEServerTransport, StreamableHTTPServerTransport } = require('./mcp-server');
 
 // Initialize Firebase Admin SDK lazily
 let dbInstance = null;
@@ -45,6 +43,7 @@ const db = new Proxy({}, {
 let genAI, modelInstance;
 function getModel() {
   if (!modelInstance && process.env.GEMINI_API_KEY) {
+    const { GoogleGenerativeAI } = require('@google/generative-ai');
     genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
     modelInstance = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-1.5-flash' });
   }
@@ -1001,6 +1000,7 @@ const sseTransports = new Map();
 
 function initMcp() {
   if (!mcpServerInstance) {
+    const { createMcpServer, StreamableHTTPServerTransport } = require('./mcp-server');
     const database = getDb();
     const genModel = getModel();
     mcpServerInstance = createMcpServer(database, client, genModel);
@@ -1016,6 +1016,7 @@ function initMcp() {
 
 // SSE endpoint for Claude Desktop / Mobile connection
 app.get('/mcp/sse', mcpAuthMiddleware, async (req, res) => {
+  const { SSEServerTransport } = require('./mcp-server');
   initMcp();
   console.log('New MCP SSE connection initiated');
   const transport = new SSEServerTransport('/mcp/messages', res);
