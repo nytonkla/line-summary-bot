@@ -126,12 +126,20 @@ function createMcpServer(db, lineClient, genAIModel) {
             if (messages.length >= limit) break;
           }
         }
+        const imageCount = messages.filter(m => m.messageType === 'image' || m.imageId).length;
 
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({ count: messages.length, messages }, null, 2)
+              text: JSON.stringify({
+                count: messages.length,
+                imageCount,
+                imageNotice: imageCount > 0
+                  ? "Found image messages! Use get_chat_image({ imageId }) with any imageId below to download and visually inspect the full image in Claude."
+                  : "No image messages found in this timeframe. Note: The bot fully supports images! When images are sent in LINE, they are saved with AI vision summaries and imageIds, which can be viewed with get_chat_image({ imageId }).",
+                messages
+              }, null, 2)
             }
           ]
         };
@@ -280,6 +288,8 @@ Provide a concise, high-level Executive Morning Briefing in Markdown:
                 chatName,
                 sender: data.displayName || data.userId || 'User',
                 text,
+                messageType: data.messageType || 'text',
+                imageId: data.imageId || (data.messageType === 'image' ? (data.messageId || doc.id) : null),
                 timestamp: data.timestamp ? (data.timestamp.toDate ? data.timestamp.toDate().toISOString() : data.timestamp) : null
               });
             }
@@ -327,6 +337,8 @@ Provide a concise, high-level Executive Morning Briefing in Markdown:
               id: doc.id,
               sender: data.displayName || data.userId || 'User',
               text,
+              messageType: data.messageType || 'text',
+              imageId: data.imageId || (data.messageType === 'image' ? (data.messageId || doc.id) : null),
               timestamp: data.timestamp ? (data.timestamp.toDate ? data.timestamp.toDate().toISOString() : data.timestamp) : null
             });
 
@@ -854,7 +866,7 @@ if (require.main === module) {
     });
 
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const genAIModel = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-3.5-flash' });
+    const genAIModel = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-1.5-flash' });
 
     const server = createMcpServer(db, lineClient, genAIModel);
     const transport = new StdioServerTransport();
