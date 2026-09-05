@@ -880,9 +880,21 @@ app.get('/health/storage', async (req, res) => {
     testedBuckets.push(info);
   }
 
+  let allProjectBuckets = [];
+  try {
+    const [buckets] = await admin.storage().getBuckets();
+    allProjectBuckets = buckets.map(b => b.name);
+    if (!workingBucket && allProjectBuckets.length > 0) {
+      workingBucket = admin.storage().bucket(allProjectBuckets[0]);
+    }
+  } catch (err) {
+    allProjectBuckets = [`Error listing buckets: ${err.message}`];
+  }
+
   const result = {
     timestamp: new Date().toISOString(),
     configuredBucket: process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.appspot.com',
+    allProjectBuckets,
     testedBuckets
   };
 
