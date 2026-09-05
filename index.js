@@ -882,7 +882,7 @@ app.get('/health/storage', async (req, res) => {
 
   let allProjectBuckets = [];
   try {
-    const [buckets] = await admin.storage().getBuckets();
+    const [buckets] = await admin.storage().bucket('temp').storage.getBuckets();
     allProjectBuckets = buckets.map(b => b.name);
     if (!workingBucket && allProjectBuckets.length > 0) {
       workingBucket = admin.storage().bucket(allProjectBuckets[0]);
