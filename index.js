@@ -16,7 +16,8 @@ console.log('Service account loaded successfully');
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  databaseURL: process.env.FIREBASE_DATABASE_URL
+  databaseURL: process.env.FIREBASE_DATABASE_URL,
+  storageBucket: process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.appspot.com'
 });
 console.log('Firebase app initialized');
 
@@ -850,6 +851,71 @@ app.get('/', async (req, res) => {
       errorDetails: error.message
     });
   }
+});
+
+// Storage Health Check & Diagnostic Endpoint
+app.get('/health/storage', async (req, res) => {
+  const candidateBuckets = [
+    process.env.FIREBASE_STORAGE_BUCKET,
+    'line-bot-sumarizer.appspot.com',
+    'line-bot-sumarizer.firebasestorage.app'
+  ].filter(Boolean);
+
+  const uniqueBuckets = [...new Set(candidateBuckets)];
+  const testedBuckets = [];
+  let workingBucket = null;
+
+  for (const bName of uniqueBuckets) {
+    const info = { name: bName, exists: false };
+    try {
+      const b = admin.storage().bucket(bName);
+      const [exists] = await b.exists();
+      info.exists = exists;
+      if (exists && !workingBucket) {
+        workingBucket = b;
+      }
+    } catch (err) {
+      info.error = err.message;
+    }
+    testedBuckets.push(info);
+  }
+
+  const result = {
+    timestamp: new Date().toISOString(),
+    configuredBucket: process.env.FIREBASE_STORAGE_BUCKET || 'line-bot-sumarizer.appspot.com',
+    testedBuckets
+  };
+
+  if (workingBucket) {
+    result.activeBucket = workingBucket.name;
+    try {
+      // Test write
+      const testFile = workingBucket.file('_health_check/test.txt');
+      await testFile.save(`Health check at ${new Date().toISOString()}`, { contentType: 'text/plain' });
+      result.writeTest = 'PASSED ✅';
+
+      // Test read
+      const [buf] = await testFile.download();
+      result.readTest = `PASSED ✅ (${buf.toString()})`;
+
+      // Test delete
+      await testFile.delete({ ignoreNotFound: true });
+      result.deleteTest = 'PASSED ✅';
+
+      // Check chat_images folder
+      const [files] = await workingBucket.getFiles({ prefix: 'chat_images/', maxResults: 10 });
+      result.chatImagesStored = files.length;
+      result.status = 'READY_AND_ONLINE ✅';
+    } catch (opErr) {
+      result.status = 'BUCKET_EXISTS_BUT_WRITE_FAILED ❌';
+      result.error = opErr.message;
+    }
+  } else {
+    result.status = 'STORAGE_NOT_ACTIVATED_OR_WRONG_BUCKET ❌';
+    result.help = 'Check Firebase Console -> Build -> Storage to ensure Storage is enabled: https://console.firebase.google.com/project/line-bot-sumarizer/storage';
+  }
+
+  res.json(result);
 });
 
 // --- 3.5. ADD MESSAGES ENDPOINT ---
