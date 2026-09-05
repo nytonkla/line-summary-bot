@@ -68,7 +68,7 @@ function createMcpServer(db, lineClient, genAIModel) {
   // -------------------------------------------------------------
   server.tool(
     'get_chat_history',
-    'Retrieves messages for a specific chat or across all chats within a timeframe.',
+    'Retrieves messages for a specific chat or across all chats within a timeframe. Returns text messages and AI-captioned image summaries (marked with [Image: ...] and imageId, which can be viewed with get_chat_image).',
     {
       chatId: z.string().optional().describe('ID of specific chat room. If omitted, pulls across all chats.'),
       limit: z.number().optional().default(50).describe('Maximum number of messages to return'),
@@ -93,6 +93,8 @@ function createMcpServer(db, lineClient, genAIModel) {
               senderId: data.userId || data.senderId || 'unknown',
               senderName: data.displayName || data.senderName || 'User',
               text: data.text || data.message || '',
+              messageType: data.messageType || 'text',
+              imageId: data.imageId || (data.messageType === 'image' ? (data.messageId || doc.id) : null),
               timestamp: data.timestamp ? (data.timestamp.toDate ? data.timestamp.toDate().toISOString() : data.timestamp) : null
             });
           });
@@ -116,6 +118,8 @@ function createMcpServer(db, lineClient, genAIModel) {
                 senderId: data.userId || data.senderId || 'unknown',
                 senderName: data.displayName || data.senderName || 'User',
                 text: data.text || data.message || '',
+                messageType: data.messageType || 'text',
+                imageId: data.imageId || (data.messageType === 'image' ? (data.messageId || doc.id) : null),
                 timestamp: data.timestamp ? (data.timestamp.toDate ? data.timestamp.toDate().toISOString() : data.timestamp) : null
               });
             });
@@ -173,6 +177,8 @@ function createMcpServer(db, lineClient, genAIModel) {
                 chatName,
                 sender: data.displayName || data.userId || 'User',
                 text: data.text,
+                messageType: data.messageType || 'text',
+                imageId: data.imageId || (data.messageType === 'image' ? (data.messageId || doc.id) : null),
                 time: data.timestamp ? (data.timestamp.toDate ? data.timestamp.toDate().toISOString() : data.timestamp) : ''
               });
             }
